@@ -1,0 +1,25 @@
+name: cai_player
+description: CAI Player V0.03 Alpha - local audio and flexible playlist editor.
+publish_to: none
+version: 0.0.3+3
+environment:
+  sdk: '>=3.11.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  file_picker: ^8.1.7
+  just_audio: ^0.9.46
+  just_audio_windows: ^0.2.2
+  audio_metadata_reader: ^1.8.1
+  flutter_soloud: ^5.3.0
+  path: ^1.9.0
+  shared_preferences: ^2.3.5
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/logo_light.png
+    - assets/logo_dark.png

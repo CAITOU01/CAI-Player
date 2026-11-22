@@ -1,0 +1,26 @@
+# Build outputs and packaged releases
+/CAI Player/
+/CAI Player V0.02/
+/CAI Player V0.03/
+/*.zip
+
+# Flutter and Dart generated files
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/.packages
+flutter_app/build/
+flutter_app/coverage/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Native build intermediates
+windows_app/bin/
+windows_app/obj/
+flutter_app/windows/flutter/ephemeral/
