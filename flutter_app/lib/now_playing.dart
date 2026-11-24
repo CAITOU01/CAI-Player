@@ -160,6 +160,9 @@ class _SpectrumChart extends StatefulWidget {
 
 class _SpectrumChartState extends State<_SpectrumChart> {
   final blocks = <int, Future<Float32List?>>{};
+  Float32List? lastData;
+  int lastSecond = -1;
+  int failures = 0;
   bool unavailable = false;
 
   Future<Float32List?> load(int second) async {
@@ -168,7 +171,17 @@ class _SpectrumChartState extends State<_SpectrumChart> {
       rate: widget.rate!,
       second: second,
     ));
-    if (mounted && data == null) setState(() => unavailable = true);
+    if (mounted) {
+      if (data == null) {
+        failures++;
+        if (failures >= 3 && lastData == null) setState(() => unavailable = true);
+      } else {
+        failures = 0;
+        lastData = data;
+        lastSecond = second;
+        if (unavailable) setState(() => unavailable = false);
+      }
+    }
     return data;
   }
 
@@ -196,22 +209,26 @@ class _SpectrumChartState extends State<_SpectrumChart> {
           (snapshot.data ?? widget.initial).inMilliseconds,
         );
         final second = ms ~/ 1000;
-        blocks.removeWhere((key, _) => key < second || key > second + 1);
+        blocks.removeWhere((key, _) => key < second - 1 || key > second + 2);
         final future = blocks.putIfAbsent(second, () => load(second));
-        if (ms % 1000 >= 450)
-          blocks.putIfAbsent(second + 1, () => load(second + 1));
+        blocks.putIfAbsent(second + 1, () => load(second + 1));
         return FutureBuilder<Float32List?>(
           key: ValueKey(second),
           future: future,
           builder: (context, block) => Semantics(
-            label: '音訊頻譜，由低頻到高頻',
+            label: '音訊頻譜，頻段 20 Hz 到 20 kHz',
             child: CustomPaint(
               painter: SpectrumPainter(
-                block.data,
-                (ms % 1000) * framesPerSecond ~/ 1000,
+                block.data ?? lastData,
+                block.data != null
+                    ? (ms % 1000) * framesPerSecond ~/ 1000
+                    : lastSecond < second
+                    ? framesPerSecond - 1
+                    : 0,
                 palette.primary,
                 palette.outlineVariant,
                 widget.expanded ? spectrumBands : 26,
+                widget.expanded,
               ),
             ),
           ),
@@ -225,18 +242,29 @@ class SpectrumPainter extends CustomPainter {
   final Float32List? data;
   final int frame, count;
   final Color color, baseline;
-  SpectrumPainter(this.data, this.frame, this.color, this.baseline, this.count);
+  final bool showScale;
+  SpectrumPainter(
+    this.data,
+    this.frame,
+    this.color,
+    this.baseline,
+    this.count,
+    this.showScale,
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bottom = size.height - 1;
+    final bottom = size.height - (showScale ? 18 : 1);
     canvas.drawLine(
       Offset(0, bottom),
       Offset(size.width, bottom),
       Paint()..color = baseline,
     );
     final bands = data;
-    if (bands == null) return;
+    if (bands == null) {
+      if (showScale) _drawScale(canvas, size, bottom);
+      return;
+    }
     final step = size.width / count;
     final paint = Paint()..color = color;
     for (int i = 0; i < count; i++) {
@@ -253,6 +281,28 @@ class SpectrumPainter extends CustomPainter {
         paint,
       );
     }
+    if (showScale) _drawScale(canvas, size, bottom);
+  }
+
+  void _drawScale(Canvas canvas, Size size, double top) {
+    const frequencies = [20, 250, 1000, 4000, 10000, 20000];
+    const labels = ['20 Hz', '250 Hz', '1 kHz', '4 kHz', '10 kHz', '20 kHz'];
+    final span = math.log((400 + 20000) / 420);
+    for (var i = 0; i < frequencies.length; i++) {
+      final ratio = math.log((400 + frequencies[i]) / 420) / span;
+      final painter = TextPainter(
+        text: TextSpan(
+          text: labels[i],
+          style: TextStyle(color: baseline, fontSize: 9),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final x = (size.width * ratio - painter.width / 2).clamp(
+        0.0,
+        math.max(0.0, size.width - painter.width),
+      ).toDouble();
+      painter.paint(canvas, Offset(x, top + 3));
+    }
   }
 
   @override
@@ -260,6 +310,7 @@ class SpectrumPainter extends CustomPainter {
       old.data != data ||
       old.frame != frame ||
       old.count != count ||
+      old.showScale != showScale ||
       old.color != color ||
       old.baseline != baseline;
 }

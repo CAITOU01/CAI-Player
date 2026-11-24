@@ -1,6 +1,7 @@
 using System;
 using NAudio.Dsp;
 using System.IO;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Threading;
 using NAudio.Wave;
@@ -29,8 +30,8 @@ namespace CaiPlayer
         private const int Bands = 64, FramesPerSecond = 20, FramesPerBlock = 10;
         private const int FftBits = 12, Window = 1 << FftBits;
         private readonly object gate = new object();
-        private int requested = -1, cachedBlock = -1;
-        private float[][] spectra;
+        private int requested = -1;
+        private readonly Dictionary<int, float[][]> cache = new Dictionary<int, float[][]>();
         private bool stopped;
 
         public TrackSignal(Uri source)
@@ -51,9 +52,12 @@ namespace CaiPlayer
             {
                 if (stopped) return false;
                 int block = frame / FramesPerBlock;
-                if (block != requested) { requested = block; Monitor.Pulse(gate); }
-                int offset = frame - cachedBlock * FramesPerBlock;
-                if (spectra == null || offset < 0 || offset >= spectra.Length) return false;
+                requested = block;
+                Monitor.Pulse(gate);
+                float[][] spectra;
+                if (!cache.TryGetValue(block, out spectra)) return false;
+                int offset = frame - block * FramesPerBlock;
+                if (offset < 0 || offset >= spectra.Length) return false;
                 Array.Copy(spectra[offset], output, Bands);
                 return true;
             }
@@ -86,9 +90,10 @@ namespace CaiPlayer
                     int block;
                     lock (gate)
                     {
-                        while (!stopped && requested == cachedBlock) Monitor.Wait(gate);
+                        while (!stopped && (requested < 0 ||
+                            (cache.ContainsKey(requested) && cache.ContainsKey(requested + 1)))) Monitor.Wait(gate);
                         if (stopped) return;
-                        block = requested;
+                        block = cache.ContainsKey(requested) ? requested + 1 : requested;
                     }
                     long first = (long)block * FramesPerBlock * rate / FramesPerSecond;
                     reader.Position = first * reader.WaveFormat.BlockAlign;
@@ -98,7 +103,7 @@ namespace CaiPlayer
                     var frames = new float[count][];
                     for (int f = 0; f < count; f++)
                     {
-                        lock (gate) { if (stopped) return; if (block != requested) break; }
+                        lock (gate) { if (stopped) return; }
                         int start = (int)(((long)block * FramesPerBlock + f) * rate / FramesPerSecond - first);
                         var bands = frames[f] = new float[Bands];
                         for (int c = 0; c < channels; c++)
@@ -123,7 +128,12 @@ namespace CaiPlayer
                     }
                     lock (gate)
                     {
-                        if (requested == block && frames[count - 1] != null) { spectra = frames; cachedBlock = block; }
+                        if (frames[count - 1] != null)
+                        {
+                            cache[block] = frames;
+                            foreach (int old in new List<int>(cache.Keys))
+                                if (old < requested - 1 || old > requested + 2) cache.Remove(old);
+                        }
                     }
                 }
             }
@@ -131,7 +141,7 @@ namespace CaiPlayer
 
         public void Dispose()
         {
-            lock (gate) { stopped = true; spectra = null; Monitor.PulseAll(gate); }
+            lock (gate) { stopped = true; cache.Clear(); Monitor.PulseAll(gate); }
         }
     }
 }

@@ -87,4 +87,20 @@ void main() {
     order.setShuffle(false, null);
     expect(order.first(tracks), same(tracks.first));
   });
+
+  test('shuffle and repeat-one are mutually exclusive', () {
+    order.repeat = PlaylistRepeat.one;
+    order.setShuffle(true, tracks.first);
+    expect(order.shuffle, isTrue);
+    expect(order.repeat, PlaylistRepeat.off);
+
+    order.repeat = PlaylistRepeat.one;
+    expect(order.repeat, PlaylistRepeat.one);
+    expect(order.shuffle, isFalse);
+
+    order.repeat = PlaylistRepeat.all;
+    order.setShuffle(true, tracks.first);
+    expect(order.shuffle, isTrue);
+    expect(order.repeat, PlaylistRepeat.all);
+  });
 }

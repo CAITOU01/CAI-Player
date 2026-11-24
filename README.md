@@ -1,4 +1,4 @@
-# CAI Player V0.05 Alpha
+# CAI Player V0.05
 
 The portable Windows app and the cross-platform Flutter project share the same CAI artwork and playlist fields. Dark mode uses the cyan play-button logo, while light mode uses the orange play-button logo.
 

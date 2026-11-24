@@ -10,7 +10,15 @@ class PlayOrder {
   final List<CaiTrack> _forward = [];
   bool _shuffle = false;
   bool get shuffle => _shuffle;
-  PlaylistRepeat repeat = PlaylistRepeat.off;
+  PlaylistRepeat _repeat = PlaylistRepeat.off;
+  PlaylistRepeat get repeat => _repeat;
+  set repeat(PlaylistRepeat value) {
+    _repeat = value;
+    if (value == PlaylistRepeat.one && _shuffle) {
+      _shuffle = false;
+      reset();
+    }
+  }
 
   PlayOrder({Random? random}) : _random = random ?? Random();
 
@@ -23,6 +31,7 @@ class PlayOrder {
   void setShuffle(bool enabled, CaiTrack? current) {
     if (enabled == _shuffle) return;
     _shuffle = enabled;
+    if (enabled && _repeat == PlaylistRepeat.one) _repeat = PlaylistRepeat.off;
     reset();
     if (enabled && current != null) _played.add(current);
   }

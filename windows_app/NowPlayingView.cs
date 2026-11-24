@@ -102,16 +102,37 @@ namespace CaiPlayer
             int x = left + side + gap, w = content - side - gap;
             if (w < 20) return;
             int captionH = (int)(25 * scale);
+            int scaleH = (int)(21 * scale);
             int nameH = Math.Min((int)(106 * scale), Math.Max((int)(62 * scale), Height / 5));
             int waveH = Math.Min((int)(158 * scale), Math.Max((int)(42 * scale), Height / 4));
             int spacer = Math.Min(pad, (int)(24 * scale));
-            int y = (Height - (captionH * 2 + nameH + spacer + waveH)) / 2;
+            int y = (Height - (captionH + nameH + spacer + waveH + scaleH)) / 2;
             DrawText(g, status, new Rectangle(x, y, w, captionH), 10F, true, Accent, false);
             y += captionH;
             DrawText(g, title, new Rectangle(x, y, w, nameH), w > 420 * scale ? 26F : 20F, true, ForeColor, true);
             y += nameH + spacer;
-            DrawText(g, "頻譜　低頻 → 高頻", new Rectangle(x, y, w, captionH), 9.5F, false, Muted, false);
-            DrawSpectrum(g, new Rectangle(x, y + captionH, w, waveH), 64);
+            DrawSpectrum(g, new Rectangle(x, y, w, waveH), 64);
+            DrawSpectrumScale(g, new Rectangle(x, y + waveH, w, scaleH));
+        }
+
+        private void DrawSpectrumScale(Graphics g, Rectangle box)
+        {
+            int[] frequencies = { 20, 250, 1000, 4000, 10000, 20000 };
+            string[] labels = { "20 Hz", "250 Hz", "1 kHz", "4 kHz", "10 kHz", "20 kHz" };
+            double span = Math.Log((400 + 20000.0) / 420);
+            for (int i = 0; i < frequencies.Length; i++)
+            {
+                double ratio = Math.Log((400 + frequencies[i]) / 420.0) / span;
+                int center = box.Left + (int)(ratio * box.Width);
+                int width = 50;
+                if (i == 0) center = box.Left + width / 2;
+                if (i == frequencies.Length - 1) center = box.Right - width / 2;
+                using (var font = new Font(Font.FontFamily, 8F))
+                    TextRenderer.DrawText(g, labels[i], font,
+                        new Rectangle(center - width / 2, box.Top, width, box.Height), Muted,
+                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+                        TextFormatFlags.SingleLine | TextFormatFlags.HorizontalCenter);
+            }
         }
 
         private void DrawText(Graphics g, string value, Rectangle box, float size, bool bold, Color ink, bool wrap)

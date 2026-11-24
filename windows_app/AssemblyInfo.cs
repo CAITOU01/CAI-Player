@@ -5,4 +5,4 @@ using System.Reflection;
 [assembly: AssemblyProduct("CAI Player")]
 [assembly: AssemblyVersion("0.0.5.0")]
 [assembly: AssemblyFileVersion("0.0.5.0")]
-[assembly: AssemblyInformationalVersion("V0.05 Alpha")]
+[assembly: AssemblyInformationalVersion("V0.05")]

@@ -12,8 +12,21 @@ namespace CaiPlayer
         private readonly HashSet<Track> playedThisRound = new HashSet<Track>();
         private int position = -1;
         private readonly List<Track> nextUp = new List<Track>();
+        private RepeatMode repeat;
         public bool Shuffle { get; private set; }
-        public RepeatMode Repeat { get; set; }
+        public RepeatMode Repeat
+        {
+            get { return repeat; }
+            set
+            {
+                repeat = value;
+                if (repeat == RepeatMode.One && Shuffle)
+                {
+                    Shuffle = false;
+                    ResetHistory(null);
+                }
+            }
+        }
 
         public void Reset(Track current)
         {
@@ -32,6 +45,7 @@ namespace CaiPlayer
         public void SetShuffle(bool enabled, Track current)
         {
             Shuffle = enabled;
+            if (enabled && repeat == RepeatMode.One) repeat = RepeatMode.Off;
             ResetHistory(current);
         }
 

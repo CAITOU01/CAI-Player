@@ -64,7 +64,7 @@ namespace CaiPlayer
         private double playbackSpeed = 1;
         private readonly ContextMenuStrip speedMenu = new ContextMenuStrip();
         private const string Product = "CAI Player";
-        private const string Version = "V0.05 Alpha";
+        private const string Version = "V0.05";
 
         public PlayerWindow(string[] args)
         {
@@ -316,9 +316,7 @@ namespace CaiPlayer
             var transport = Row();
             shuffle = IconButton("\uE8B1", "隨機播放已關閉", delegate {
                 order.SetShuffle(!order.Shuffle, active);
-                Glyph(shuffle, "\uE8B1", order.Shuffle ? "隨機播放已開啟" : "隨機播放已關閉");
-                shuffle.Tag = order.Shuffle ? "accent" : null;
-                SetTheme();
+                RefreshOrderControls();
             });
             transport.Controls.Add(shuffle);
             transport.Controls.Add(IconButton("\uE892", "上一首", delegate { Skip(-1); }));
@@ -334,10 +332,7 @@ namespace CaiPlayer
                 {
                     ((ToolStripMenuItem)repeatMenu.Items[(int)order.Repeat]).Checked = false;
                     order.Repeat = mode;
-                    item.Checked = true;
-                    Glyph(repeat, mode == RepeatMode.One ? "\uE8ED" : "\uE8EE", item.Text);
-                    repeat.Tag = mode == RepeatMode.Off ? null : "accent";
-                    SetTheme();
+                    RefreshOrderControls();
                 };
                 repeatMenu.Items.Add(item);
             }
@@ -383,6 +378,18 @@ namespace CaiPlayer
             volRow.Controls.Add(volume);
             deck.Controls.Add(volRow, 1, 2);
             page.Controls.Add(deck, 0, 5);
+        }
+
+        private void RefreshOrderControls()
+        {
+            Glyph(shuffle, "\uE8B1", order.Shuffle ? "隨機播放已開啟" : "隨機播放已關閉");
+            shuffle.Tag = order.Shuffle ? "accent" : null;
+            for (int i = 0; i < repeatMenu.Items.Count; i++)
+                ((ToolStripMenuItem)repeatMenu.Items[i]).Checked = i == (int)order.Repeat;
+            string label = ((ToolStripMenuItem)repeatMenu.Items[(int)order.Repeat]).Text;
+            Glyph(repeat, order.Repeat == RepeatMode.One ? "\uE8ED" : "\uE8EE", label);
+            repeat.Tag = order.Repeat == RepeatMode.Off ? null : "accent";
+            SetTheme();
         }
 
         private void ToggleView()
@@ -453,9 +460,14 @@ namespace CaiPlayer
         {
             bool available = ready && signal != null &&
                 signal.TryGetLevels(seeking ? duration * progress.Value / 1000 : Position, levels);
-            (expanded ? stage : banner).SetSignal(available, levels);
+            if (available) (expanded ? stage : banner).SetSignal(true, levels);
+            else if (!ready || signal == null) {
+                banner.SetSignal(false, null);
+                stage.SetSignal(false, null);
+            }
             if (miniBanner != null) {
-                miniBanner.SetSignal(available, levels);
+                if (available) miniBanner.SetSignal(true, levels);
+                else if (!ready || signal == null) miniBanner.SetSignal(false, null);
                 if (miniPlay.AccessibleName != playButton.AccessibleName) Glyph(miniPlay, playButton.Text, playButton.AccessibleName);
                 miniPlay.Enabled = playlist.Tracks.Count > 0;
             }

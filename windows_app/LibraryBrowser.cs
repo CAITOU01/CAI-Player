@@ -33,6 +33,28 @@ namespace CaiPlayer
 
     internal sealed partial class PlayerWindow
     {
+        private sealed class LibraryPaths
+        {
+            internal readonly List<string> Files = new List<string>();
+            internal int TimedOut;
+        }
+
+        private static async Task<LibraryPaths> FindLibraryPaths(string[] roots, bool videos)
+        {
+            var result = new LibraryPaths();
+            var scans = roots.Select(root => Task.Run(() => MusicFolders.Scan(new[] { root }, videos))).ToArray();
+            if (scans.Length == 0) return result;
+            await Task.WhenAny(Task.WhenAll(scans), Task.Delay(4000));
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var scan in scans)
+            {
+                if (scan.Status != TaskStatus.RanToCompletion) { result.TimedOut++; continue; }
+                foreach (string file in scan.Result.Files)
+                    if (seen.Add(file)) result.Files.Add(file);
+            }
+            return result;
+        }
+
         private static string[] RecentPaths()
         {
             return Registry.GetValue(MusicFolders.Settings, "RecentTracks", null) as string[] ?? new string[0];
@@ -91,18 +113,40 @@ namespace CaiPlayer
                     string[] roots = videos ? VideoFolders() : playlist.MusicRoots;
                     songs.Clear(); render(); dialog.Text = "音樂庫 · 載入中…";
                     try {
-                        var result = await Task.Run(() => {
-                            var paths = recent ? (IEnumerable<string>)RecentPaths() : MusicFolders.Scan(roots, videos).Files;
-                            var rows = new List<LibrarySong>();
-                            foreach (var path in paths) {
-                                if (System.Threading.Volatile.Read(ref generation) != request) break;
-                                rows.Add(LibrarySong.Read(path));
-                            }
-                            return rows;
-                        });
+                        var found = recent
+                            ? new LibraryPaths()
+                            : await FindLibraryPaths(roots, videos);
+                        if (recent) found.Files.AddRange(RecentPaths());
                         if (request != generation || dialog.IsDisposed) return;
-                        songs = result; render(); dialog.Text = "音樂庫 · " + songs.Count + " 首";
-                    } catch (Exception e) { if (!dialog.IsDisposed) ShowError("無法讀取音樂庫", e); }
+                        songs = found.Files.Select(path => new LibrarySong { Path = path,
+                            Title = System.IO.Path.GetFileNameWithoutExtension(path) }).ToList();
+                        render();
+                        dialog.Text = "音樂庫 · " + songs.Count + " 首" +
+                            (found.TimedOut == 0 ? "" : " · " + found.TimedOut + " 個路徑逾時");
+
+                        // The library is usable as soon as paths are known. Read tags afterward so
+                        // one slow or damaged file cannot leave the whole window stuck on Loading.
+                        await Task.Run(delegate {
+                            for (int i = 0; i < found.Files.Count; i++)
+                            {
+                                if (System.Threading.Volatile.Read(ref generation) != request) return;
+                                var metadata = LibrarySong.Read(found.Files[i]);
+                                int index = i;
+                                try {
+                                    dialog.BeginInvoke((Action)delegate {
+                                        if (request != generation || dialog.IsDisposed || index >= songs.Count) return;
+                                        songs[index] = metadata;
+                                        if (index % 20 == 19 || index + 1 == found.Files.Count) render();
+                                    });
+                                } catch (InvalidOperationException) { return; }
+                            }
+                        });
+                    } catch (Exception e) {
+                        if (!dialog.IsDisposed) {
+                            dialog.Text = "音樂庫 · 載入失敗";
+                            ShowError("無法讀取音樂庫", e);
+                        }
+                    }
                 };
                 source.SelectedIndexChanged += delegate { load(); }; dialog.Shown += delegate { load(); };
                 var configure = ActionButton("影片資料夾…", delegate {

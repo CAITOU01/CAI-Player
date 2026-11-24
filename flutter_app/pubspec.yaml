@@ -1,5 +1,5 @@
 name: cai_player
-description: CAI Player V0.05 Alpha - local audio and flexible playlist editor.
+description: CAI Player V0.05 - local audio and flexible playlist editor.
 publish_to: none
 version: 0.0.5+5
 environment:
