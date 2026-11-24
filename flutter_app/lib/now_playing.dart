@@ -2,13 +2,16 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
+
+import 'spectrum.dart';
 
 class NowPlaying extends StatelessWidget {
   final String title;
   final bool expanded;
   final Uint8List? cover;
-  final Float32List? samples;
-  final Duration length;
+  final String? path;
+  final int? rate;
   final Stream<Duration> positions;
   final Duration position;
   final VoidCallback onToggle;
@@ -18,8 +21,8 @@ class NowPlaying extends StatelessWidget {
     required this.title,
     required this.expanded,
     required this.cover,
-    required this.samples,
-    required this.length,
+    required this.path,
+    required this.rate,
     required this.positions,
     required this.position,
     required this.onToggle,
@@ -52,19 +55,13 @@ class NowPlaying extends StatelessWidget {
           ? Theme.of(context).textTheme.headlineMedium
           : Theme.of(context).textTheme.titleSmall,
     );
-    final chart = StreamBuilder<Duration>(
-      stream: positions,
-      initialData: position,
-      builder: (ctx, snapshot) => CustomPaint(
-        painter: EnvelopePainter(
-          samples,
-          snapshot.data ?? position,
-          length,
-          palette.primary,
-          palette.outlineVariant,
-          expanded ? 64 : 26,
-        ),
-      ),
+    final chart = _SpectrumChart(
+      key: ValueKey((path, rate)),
+      path: path,
+      rate: rate,
+      positions: positions,
+      initial: position,
+      expanded: expanded,
     );
     if (!expanded) {
       return Material(
@@ -143,53 +140,126 @@ class NowPlaying extends StatelessWidget {
   }
 }
 
-class EnvelopePainter extends CustomPainter {
-  final Float32List? samples;
-  final Duration position, duration;
+class _SpectrumChart extends StatefulWidget {
+  final String? path;
+  final int? rate;
+  final Stream<Duration> positions;
+  final Duration initial;
+  final bool expanded;
+  const _SpectrumChart({
+    super.key,
+    required this.path,
+    required this.rate,
+    required this.positions,
+    required this.initial,
+    required this.expanded,
+  });
+  @override
+  State<_SpectrumChart> createState() => _SpectrumChartState();
+}
+
+class _SpectrumChartState extends State<_SpectrumChart> {
+  final blocks = <int, Future<Float32List?>>{};
+  bool unavailable = false;
+
+  Future<Float32List?> load(int second) async {
+    final data = await compute(readSpectrum, (
+      path: widget.path!,
+      rate: widget.rate!,
+      second: second,
+    ));
+    if (mounted && data == null) setState(() => unavailable = true);
+    return data;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rate = widget.rate;
+    final palette = Theme.of(context).colorScheme;
+    if (unavailable ||
+        widget.path == null ||
+        rate == null ||
+        rate < 1000 ||
+        rate > 384000) {
+      return Center(
+        child: widget.expanded
+            ? const Text('無法取得頻譜')
+            : const Icon(Icons.graphic_eq, size: 16, semanticLabel: '無法取得頻譜'),
+      );
+    }
+    return StreamBuilder<Duration>(
+      stream: widget.positions,
+      initialData: widget.initial,
+      builder: (context, snapshot) {
+        final ms = math.max(
+          0,
+          (snapshot.data ?? widget.initial).inMilliseconds,
+        );
+        final second = ms ~/ 1000;
+        blocks.removeWhere((key, _) => key < second || key > second + 1);
+        final future = blocks.putIfAbsent(second, () => load(second));
+        if (ms % 1000 >= 450)
+          blocks.putIfAbsent(second + 1, () => load(second + 1));
+        return FutureBuilder<Float32List?>(
+          key: ValueKey(second),
+          future: future,
+          builder: (context, block) => Semantics(
+            label: '音訊頻譜，由低頻到高頻',
+            child: CustomPaint(
+              painter: SpectrumPainter(
+                block.data,
+                (ms % 1000) * framesPerSecond ~/ 1000,
+                palette.primary,
+                palette.outlineVariant,
+                widget.expanded ? spectrumBands : 26,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class SpectrumPainter extends CustomPainter {
+  final Float32List? data;
+  final int frame, count;
   final Color color, baseline;
-  final int count;
-  EnvelopePainter(
-    this.samples,
-    this.position,
-    this.duration,
-    this.color,
-    this.baseline,
-    this.count,
-  );
+  SpectrumPainter(this.data, this.frame, this.color, this.baseline, this.count);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final mid = size.height / 2;
+    final bottom = size.height - 1;
     canvas.drawLine(
-      Offset(0, mid),
-      Offset(size.width, mid),
+      Offset(0, bottom),
+      Offset(size.width, bottom),
       Paint()..color = baseline,
     );
-    final data = samples;
-    if (data == null || data.isEmpty || duration.inMilliseconds <= 0) return;
-    final last =
-        (position.inMilliseconds / duration.inMilliseconds * data.length)
-            .floor()
-            .clamp(0, data.length - 1);
+    final bands = data;
+    if (bands == null) return;
     final step = size.width / count;
     final paint = Paint()..color = color;
     for (int i = 0; i < count; i++) {
-      final index = last - count + i + 1;
-      if (index < 0) continue;
-      final h = data[index].abs().clamp(0.0, 1.0) * mid;
+      var peak = 0.0;
+      for (
+        var b = i * spectrumBands ~/ count;
+        b < (i + 1) * spectrumBands ~/ count;
+        b++
+      ) {
+        peak = math.max(peak, bands[frame * spectrumBands + b]);
+      }
       canvas.drawRect(
-        Rect.fromLTRB(i * step, mid - h, (i + .75) * step, mid + h),
+        Rect.fromLTRB(i * step, bottom * (1 - peak), (i + .75) * step, bottom),
         paint,
       );
     }
   }
 
   @override
-  bool shouldRepaint(EnvelopePainter old) =>
-      old.samples != samples ||
-      old.position != position ||
-      old.duration != duration ||
-      old.color != color ||
+  bool shouldRepaint(SpectrumPainter old) =>
+      old.data != data ||
+      old.frame != frame ||
       old.count != count ||
+      old.color != color ||
       old.baseline != baseline;
 }

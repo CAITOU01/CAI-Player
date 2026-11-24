@@ -3,6 +3,8 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
+using System.Windows.Media.Imaging;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 
@@ -132,7 +134,7 @@ namespace CaiPlayer
                         }
                         finally { Marshal.FreeHGlobal(count); }
                         bytes.Position = 0;
-                        return Decode(bytes);
+                        return DecodeCover(bytes);
                     }
                 }
                 finally { Marshal.ReleaseComObject(source); }
@@ -140,9 +142,112 @@ namespace CaiPlayer
             finally { PropVariantClear(ref value); Marshal.ReleaseComObject(store); }
         }
 
+        private static class WebP32
+        {
+            [DllImport("webpdecoder-x86.dll", CallingConvention = CallingConvention.Cdecl)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+            internal static extern int WebPGetInfo(byte[] data, UIntPtr count, out int width, out int height);
+            [DllImport("webpdecoder-x86.dll", CallingConvention = CallingConvention.Cdecl)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+            internal static extern IntPtr WebPDecodeBGRAInto(byte[] data, UIntPtr count, IntPtr dest, UIntPtr size, int stride);
+        }
+
+        private static class WebP64
+        {
+            [DllImport("webpdecoder-x64.dll", CallingConvention = CallingConvention.Cdecl)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+            internal static extern int WebPGetInfo(byte[] data, UIntPtr count, out int width, out int height);
+            [DllImport("webpdecoder-x64.dll", CallingConvention = CallingConvention.Cdecl)]
+            [DefaultDllImportSearchPaths(DllImportSearchPath.AssemblyDirectory)]
+            internal static extern IntPtr WebPDecodeBGRAInto(byte[] data, UIntPtr count, IntPtr dest, UIntPtr size, int stride);
+        }
+
+        private static Bitmap ReadWebP(Stream input)
+        {
+            byte[] bytes;
+            using (var reader = new BinaryReader(input, System.Text.Encoding.UTF8, true))
+                bytes = reader.ReadBytes(checked((int)input.Length));
+            var count = (UIntPtr)(uint)bytes.Length;
+            int width, height;
+            int valid = IntPtr.Size == 8 ? WebP64.WebPGetInfo(bytes, count, out width, out height)
+                : WebP32.WebPGetInfo(bytes, count, out width, out height);
+            if (valid == 0 || width <= 0 || height <= 0 || (long)width * height > 32L * 1024 * 1024) return null;
+            using (var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb))
+            {
+                var data = bitmap.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, bitmap.PixelFormat);
+                try
+                {
+                    var size = (UIntPtr)(uint)(data.Stride * height);
+                    var result = IntPtr.Size == 8 ? WebP64.WebPDecodeBGRAInto(bytes, count, data.Scan0, size, data.Stride)
+                        : WebP32.WebPDecodeBGRAInto(bytes, count, data.Scan0, size, data.Stride);
+                    if (result == IntPtr.Zero) return null;
+                }
+                finally { bitmap.UnlockBits(data); }
+                double scale = Math.Min(1, 800.0 / Math.Max(width, height));
+                return new Bitmap(bitmap, Math.Max(1, (int)(width * scale)), Math.Max(1, (int)(height * scale)));
+            }
+        }
+
+        private static Bitmap DecodeCover(Stream input)
+        {
+            var header = new byte[12];
+            int read = input.Read(header, 0, header.Length);
+            input.Position = 0;
+            if (read == 12 && System.Text.Encoding.ASCII.GetString(header, 0, 4) == "RIFF" &&
+                System.Text.Encoding.ASCII.GetString(header, 8, 4) == "WEBP")
+            {
+                var image = ReadWebP(input);
+                if (image != null) return image;
+                input.Position = 0;
+            }
+            try { return Decode(input); }
+            catch (Exception)
+            {
+                // Try additional image decoders installed with Windows.
+                input.Position = 0;
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = 800;
+                bitmap.StreamSource = input;
+                bitmap.EndInit();
+                if ((long)bitmap.PixelWidth * bitmap.PixelHeight > 64L * 1024 * 1024) return null;
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using (var png = new MemoryStream()) { encoder.Save(png); png.Position = 0; return Decode(png); }
+            }
+        }
+
+        private static Bitmap TaggedCover(string path, out string album)
+        {
+            album = null;
+            using (var file = TagLib.File.Create(path, TagLib.ReadStyle.None))
+            {
+                album = file.Tag.Album;
+                foreach (var picture in file.Tag.Pictures.OrderByDescending(p => p.Type == TagLib.PictureType.FrontCover))
+                {
+                    try
+                    {
+                        var data = picture.Data;
+                        if (data == null || data.Count == 0 || data.Count > MaxArtBytes) continue;
+                        using (var input = new MemoryStream(data.Data, false))
+                        {
+                            var decoded = DecodeCover(input);
+                            if (decoded != null) return decoded;
+                        }
+                    }
+                    catch (Exception) { /* Try other pictures, even if the front cover is damaged. */ }
+                }
+            }
+            return null;
+        }
+
         public static Bitmap ReadCover(string path)
         {
             if (!File.Exists(path)) return null;
+            string album = null;
+            try { var tagged = TaggedCover(path, out album); if (tagged != null) return tagged; }
+            catch (Exception) { /* An untagged or unsupported container may still have a shell thumbnail. */ }
             try
             {
                 var cover = EmbeddedCover(path);
@@ -150,16 +255,18 @@ namespace CaiPlayer
             }
             catch (Exception) { /* Some optional property handlers cannot decode a particular tag. */ }
             string folder = Path.GetDirectoryName(path);
-            foreach (var stem in new[] { Path.GetFileNameWithoutExtension(path), "cover", "folder", "front" })
+            string name = Path.GetFileNameWithoutExtension(path);
+            foreach (var stem in new[] { name, Path.GetFileName(path), name + ".cover", album, "cover", "folder", "front", "album", "albumart", "albumartsmall" })
             {
-                foreach (var extension in new[] { ".jpg", ".jpeg", ".png" })
+                if (String.IsNullOrWhiteSpace(stem) || stem.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) continue;
+                foreach (var extension in new[] { ".jpg", ".jpeg", ".png", ".webp", ".jfif", ".bmp", ".gif" })
                 {
                     var candidate = Path.Combine(folder, stem + extension);
                     if (!File.Exists(candidate)) continue;
                     try
                     {
                         using (var input = File.Open(candidate, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                            if (input.Length <= MaxArtBytes) { var art = Decode(input); if (art != null) return art; }
+                            if (input.Length > 0 && input.Length <= MaxArtBytes) { var art = DecodeCover(input); if (art != null) return art; }
                     }
                     catch (Exception) { /* Try the next supported local cover. */ }
                 }

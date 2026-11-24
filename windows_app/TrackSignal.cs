@@ -1,9 +1,8 @@
 using System;
-using System.Diagnostics;
+using NAudio.Dsp;
 using System.IO;
 using System.Reflection;
 using System.Threading;
-using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace CaiPlayer
@@ -25,177 +24,114 @@ namespace CaiPlayer
         }
     }
 
-    // The chart shows peaks in consecutive 40 ms intervals, oldest on the left.
-    // The file reader stays separate from playback so scrubbing and volume changes
-    // cannot interrupt the audio. Streams use only this process's output session.
     internal sealed class TrackSignal : IDisposable
     {
-        private const int BinsPerSecond = 25, History = 64, Block = 100;
+        private const int Bands = 64, FramesPerSecond = 20, FramesPerBlock = 10;
+        private const int FftBits = 12, Window = 1 << FftBits;
         private readonly object gate = new object();
-        private readonly Uri source;
-        private int requested = -1, start;
-        private float[] cache;
-        private bool stopped, liveMode;
+        private int requested = -1, cachedBlock = -1;
+        private float[][] spectra;
+        private bool stopped;
 
         public TrackSignal(Uri source)
         {
-            this.source = source;
-            var worker = new Thread(Run) { IsBackground = true, Name = "CAI audio levels" };
+            if (!source.IsFile) return;
+            var worker = new Thread(delegate() {
+                try { Analyze(source.LocalPath); }
+                catch (Exception) { /* Visualization is optional for unsupported codecs. */ }
+            }) { IsBackground = true, Name = "CAI spectrum" };
             worker.Start();
         }
 
         public bool TryGetLevels(double seconds, float[] output)
         {
-            if (output == null || output.Length == 0 || !(seconds >= 0 && seconds < int.MaxValue / BinsPerSecond)) return false;
-            int last = (int)(seconds * BinsPerSecond);
+            if (!(seconds >= 0 && seconds < int.MaxValue / FramesPerSecond) || output == null || output.Length != Bands) return false;
+            int frame = (int)(seconds * FramesPerSecond);
             lock (gate)
             {
                 if (stopped) return false;
-                if (last != requested) { requested = last; Monitor.Pulse(gate); }
-                // The session meter is sampled asynchronously after this UI tick.
-                if (liveMode && cache != null && last >= start + cache.Length && last < start + cache.Length + 6)
-                    last = start + cache.Length - 1;
-                if (cache == null || last < start || last >= start + cache.Length) return false;
-                int first = last + 1 - output.Length;
-                for (int i = 0; i < output.Length; i++)
-                {
-                    int j = first + i - start;
-                    output[i] = j < 0 ? 0 : cache[j];
-                }
+                int block = frame / FramesPerBlock;
+                if (block != requested) { requested = block; Monitor.Pulse(gate); }
+                int offset = frame - cachedBlock * FramesPerBlock;
+                if (spectra == null || offset < 0 || offset >= spectra.Length) return false;
+                Array.Copy(spectra[offset], output, Bands);
                 return true;
             }
         }
 
-        private void Run()
+        private void Analyze(string path)
         {
-            if (source.IsFile)
-            {
-                try { AnalyzeFile(); return; }
-                catch (Exception) { /* The playback engine may support additional codecs. */ }
-            }
-            try { MonitorOutput(); } catch (Exception) { /* Meter availability never affects playback. */ }
-        }
-
-        private void AnalyzeFile()
-        {
-            using (var reader = new MediaFoundationReader(source.LocalPath,
+            using (var reader = new MediaFoundationReader(path,
                 new MediaFoundationReader.MediaFoundationReaderSettings { SingleReaderObject = true }))
             {
                 var pcm = reader.ToSampleProvider();
-                int frames = Math.Max(1, reader.WaveFormat.SampleRate / BinsPerSecond);
-                var samples = new float[checked(frames * reader.WaveFormat.Channels)];
-                int loadedBlock = -1;
+                int rate = pcm.WaveFormat.SampleRate, channels = pcm.WaveFormat.Channels;
+                // Two overlapping frames keep the display continuous during block changes.
+                const int count = FramesPerBlock + 2;
+                var buffer = new float[(rate * count / FramesPerSecond + Window + 2) * channels];
+                var fft = new Complex[Window];
+                var hann = new float[Window];
+                for (int i = 0; i < Window; i++)
+                    hann[i] = (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * i / (Window - 1)));
+                var bandOf = new int[Window / 2];
+                double top = Math.Min(20000, rate * 0.5);
+                for (int k = 1; k < bandOf.Length; k++)
+                {
+                    double hz = (double)k * rate / Window;
+                    bandOf[k] = hz < 20 || hz > top ? -1 : Math.Min(Bands - 1,
+                        (int)(Bands * Math.Log((400 + hz) / 420) / Math.Log((400 + top) / 420)));
+                }
                 while (true)
                 {
                     int block;
                     lock (gate)
                     {
-                        while (!stopped && (requested < 0 || requested / Block == loadedBlock)) Monitor.Wait(gate);
+                        while (!stopped && requested == cachedBlock) Monitor.Wait(gate);
                         if (stopped) return;
-                        block = requested / Block;
+                        block = requested;
                     }
-                    int first = Math.Max(0, block * Block - History);
-                    var peaks = new float[(block + 1) * Block + 12 - first];
-                    reader.Position = (long)first * frames * reader.WaveFormat.BlockAlign;
-                    for (int i = 0; i < peaks.Length; i++)
+                    long first = (long)block * FramesPerBlock * rate / FramesPerSecond;
+                    reader.Position = first * reader.WaveFormat.BlockAlign;
+                    int received = 0, read;
+                    while (received < buffer.Length && (read = pcm.Read(buffer, received, buffer.Length - received)) > 0)
+                        received += read;
+                    var frames = new float[count][];
+                    for (int f = 0; f < count; f++)
                     {
-                        lock (gate) { if (stopped) return; if (requested / Block != block) break; }
-                        int count = pcm.Read(samples, 0, samples.Length);
-                        if (count == 0) break;
-                        float peak = 0;
-                        for (int j = 0; j < count; j++) peak = Math.Max(peak, Math.Abs(samples[j]));
-                        peaks[i] = Math.Min(1, peak);
+                        lock (gate) { if (stopped) return; if (block != requested) break; }
+                        int start = (int)(((long)block * FramesPerBlock + f) * rate / FramesPerSecond - first);
+                        var bands = frames[f] = new float[Bands];
+                        for (int c = 0; c < channels; c++)
+                        {
+                            for (int i = 0; i < Window; i++)
+                            {
+                                int index = (start + i) * channels + c;
+                                fft[i].X = index < received ? buffer[index] * hann[i] : 0;
+                                fft[i].Y = 0;
+                            }
+                            FastFourierTransform.FFT(true, FftBits, fft);
+                            for (int k = 1; k < bandOf.Length; k++)
+                            {
+                                int band = bandOf[k];
+                                if (band < 0) continue;
+                                float power = fft[k].X * fft[k].X + fft[k].Y * fft[k].Y;
+                                bands[band] = Math.Max(bands[band], power);
+                            }
+                        }
+                        for (int b = 0; b < Bands; b++)
+                            bands[b] = (float)Math.Max(0, Math.Min(1, 1 + 10 * Math.Log10(Math.Max(1e-12, 16 * bands[b])) / 60));
                     }
                     lock (gate)
                     {
-                        if (requested / Block == block) { start = first; cache = peaks; loadedBlock = block; }
-                        else loadedBlock = -1;
+                        if (requested == block && frames[count - 1] != null) { spectra = frames; cachedBlock = block; }
                     }
                 }
-            }
-        }
-
-        private static AudioSessionControl FindSession(MMDeviceEnumerator devices, int pid)
-        {
-            var endpoints = devices.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
-            foreach (var device in endpoints)
-            using (device)
-            {
-                var sessions = device.AudioSessionManager.Sessions;
-                for (int i = 0; i < sessions.Count; i++)
-                {
-                    var session = sessions[i];
-                    if (session.GetProcessID == pid && session.AudioMeterInformation != null &&
-                        session.State == NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive) return session;
-                    session.Dispose();
-                }
-            }
-            return null;
-        }
-
-        private void MonitorOutput()
-        {
-            lock (gate) { liveMode = true; cache = null; }
-            using (var devices = new MMDeviceEnumerator())
-            using (var process = Process.GetCurrentProcess())
-            {
-                AudioSessionControl session = null;
-                int last = -1;
-                var retry = Stopwatch.StartNew();
-                try
-                {
-                    while (true)
-                    {
-                        int point;
-                        lock (gate)
-                        {
-                            while (!stopped && requested == last) Monitor.Wait(gate);
-                            if (stopped) return;
-                            point = requested;
-                        }
-                        try
-                        {
-                            if (session == null && (last < 0 || retry.ElapsedMilliseconds >= 500))
-                            {
-                                retry.Restart();
-                                session = FindSession(devices, process.Id);
-                            }
-                            if (session != null && session.State != NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive)
-                            {
-                                session.Dispose(); session = null;
-                            }
-                            if (session != null)
-                            {
-                                float peak = session.AudioMeterInformation.MasterPeakValue;
-                                lock (gate)
-                                {
-                                    int step = point - last;
-                                    if (cache == null || step <= 0 || step >= History) cache = new float[History];
-                                    else
-                                    {
-                                        Array.Copy(cache, step, cache, 0, History - step);
-                                        Array.Clear(cache, History - step, step);
-                                    }
-                                    start = point - History + 1;
-                                    cache[History - 1] = peak;
-                                }
-                            }
-                        }
-                        catch (Exception)
-                        {
-                            if (session != null) session.Dispose();
-                            session = null;
-                        }
-                        last = point;
-                    }
-                }
-                finally { if (session != null) session.Dispose(); }
             }
         }
 
         public void Dispose()
         {
-            lock (gate) { stopped = true; cache = null; Monitor.PulseAll(gate); }
+            lock (gate) { stopped = true; spectra = null; Monitor.PulseAll(gate); }
         }
     }
 }

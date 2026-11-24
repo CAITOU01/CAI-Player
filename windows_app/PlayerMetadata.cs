@@ -15,10 +15,15 @@ namespace CaiPlayer
 
         private string LocalSource(Track track)
         {
+            return LocalSource(playlist, track.Path);
+        }
+
+        private static string LocalSource(Playlist source, string path)
+        {
             try
             {
                 Uri uri;
-                return Uri.TryCreate(playlist.Resolve(track), UriKind.Absolute, out uri) && uri.IsFile ? uri.LocalPath : null;
+                return Uri.TryCreate(source.ResolvePath(path), UriKind.Absolute, out uri) && uri.IsFile ? uri.LocalPath : null;
             }
             catch (Exception) { return null; }
         }
@@ -43,13 +48,15 @@ namespace CaiPlayer
         {
             public Track Track;
             public ListViewItem Row;
-            public string Path;
+            public string OriginalPath, LastPath, Path;
+            public bool HasDuration;
             public double Seconds;
         }
 
         private async void QueueDurationScan()
         {
             int request = Interlocked.Increment(ref scanRequest);
+            var source = new Playlist { SourcePath = playlist.SourcePath, MusicRoots = playlist.MusicRoots };
             var live = new HashSet<Track>(playlist.Tracks);
             foreach (var old in new List<Track>(detectedAt.Keys))
                 if (!live.Contains(old)) detectedAt.Remove(old);
@@ -58,17 +65,9 @@ namespace CaiPlayer
             {
                 var track = (Track)row.Tag;
                 string last;
-                if (track.Duration > 0 && !detectedAt.ContainsKey(track)) continue;
-                string file = LocalSource(track);
-                if (detectedAt.TryGetValue(track, out last) && !String.Equals(file, last, StringComparison.OrdinalIgnoreCase))
-                {
-                    // A new music root may resolve the same relative name to different audio.
-                    detectedAt.Remove(track);
-                    track.Duration = -1;
-                    row.SubItems[2].Text = "—";
-                }
-                if (file != null && track.Duration <= 0)
-                    pending.Add(new DurationProbe { Track = track, Row = row, Path = file });
+                if (!detectedAt.TryGetValue(track, out last) && track.Duration > 0) continue;
+                pending.Add(new DurationProbe { Track = track, Row = row, OriginalPath = track.Path,
+                    LastPath = last, HasDuration = track.Duration > 0 });
             }
             for (int start = 0; start < pending.Count; start += 8)
             {
@@ -77,6 +76,8 @@ namespace CaiPlayer
                     foreach (var job in batch)
                     {
                         if (request != Volatile.Read(ref scanRequest)) break;
+                        job.Path = LocalSource(source, job.OriginalPath);
+                        if (job.Path == null || (job.HasDuration && String.Equals(job.Path, job.LastPath, StringComparison.OrdinalIgnoreCase))) continue;
                         try { job.Seconds = TrackMetadata.ReadSeconds(job.Path); }
                         catch (Exception) { /* An unreadable or unsupported file retains its unknown duration. */ }
                     }
@@ -84,6 +85,13 @@ namespace CaiPlayer
                 if (request != scanRequest || IsDisposed || Disposing) return;
                 foreach (var job in batch)
                 {
+                    string known;
+                    if (detectedAt.TryGetValue(job.Track, out known) && !String.Equals(known, job.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        detectedAt.Remove(job.Track);
+                        job.Track.Duration = -1;
+                        job.Row.SubItems[2].Text = "—";
+                    }
                     if (job.Track.Duration > 0) continue;
                     if (job.Seconds > 0 && job.Seconds < int.MaxValue)
                         RecordDuration(job.Track, job.Path, job.Seconds, job.Row);

@@ -11,10 +11,17 @@ namespace CaiPlayer
         private readonly List<Track> history = new List<Track>();
         private readonly HashSet<Track> playedThisRound = new HashSet<Track>();
         private int position = -1;
+        private readonly List<Track> nextUp = new List<Track>();
         public bool Shuffle { get; private set; }
         public RepeatMode Repeat { get; set; }
 
         public void Reset(Track current)
+        {
+            nextUp.Clear();
+            ResetHistory(current);
+        }
+
+        private void ResetHistory(Track current)
         {
             history.Clear();
             playedThisRound.Clear();
@@ -25,12 +32,13 @@ namespace CaiPlayer
         public void SetShuffle(bool enabled, Track current)
         {
             Shuffle = enabled;
-            Reset(current);
+            ResetHistory(current);
         }
 
         // An explicit song selection starts a new forward path from this position.
         public void Select(Track track)
         {
+            nextUp.Remove(track);
             if (!Shuffle || (position >= 0 && history[position] == track)) return;
             history.RemoveRange(position + 1, history.Count - position - 1);
             history.Add(track);
@@ -40,6 +48,7 @@ namespace CaiPlayer
 
         public void Forget(Track track)
         {
+            nextUp.Remove(track);
             playedThisRound.Remove(track);
             for (int i = history.Count - 1; i >= 0; i--)
             {
@@ -51,9 +60,9 @@ namespace CaiPlayer
 
         public Track Begin(List<Track> tracks, Track selected)
         {
-            Reset(null);
+            ResetHistory(null);
             if (tracks.Count == 0) return null;
-            var first = Shuffle ? tracks[random.Next(tracks.Count)] : selected ?? tracks[0];
+            var first = nextUp.Count > 0 ? nextUp[0] : (Shuffle ? tracks[random.Next(tracks.Count)] : selected ?? tracks[0]);
             Select(first);
             return first;
         }
@@ -62,6 +71,12 @@ namespace CaiPlayer
         {
             if (current == null || tracks.Count == 0) return null;
             if (finished && Repeat == RepeatMode.One) return current;
+            if (nextUp.Count > 0) {
+                var requested = nextUp[0];
+                nextUp.RemoveAt(0);
+                Select(requested);
+                return requested;
+            }
             if (!Shuffle)
             {
                 int next = tracks.IndexOf(current) + 1;
@@ -96,5 +111,7 @@ namespace CaiPlayer
             if (index > 0) return tracks[index - 1];
             return index == 0 && Repeat == RepeatMode.All ? tracks[tracks.Count - 1] : null;
         }
+
+        public void PlayNext(Track track) { nextUp.Remove(track); nextUp.Insert(0, track); }
     }
 }

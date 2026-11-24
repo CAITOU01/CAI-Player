@@ -87,7 +87,7 @@ namespace CaiPlayer
             int textY = Math.Max(0, (Height - statusH - nameH) / 2);
             DrawText(g, status, new Rectangle(titleX, textY, titleW, statusH), 9F, false, Muted, false);
             DrawText(g, title, new Rectangle(titleX, textY + statusH, titleW, nameH), 13F, true, ForeColor, false);
-            DrawWave(g, new Rectangle(Width - chartWidth - gap, (Height - size) / 2 + 4, chartWidth, size - 8), 32);
+            DrawSpectrum(g, new Rectangle(Width - chartWidth - gap, (Height - size) / 2 + 4, chartWidth, size - 8), 32);
         }
 
         private void DrawExpanded(Graphics g, float scale)
@@ -110,8 +110,8 @@ namespace CaiPlayer
             y += captionH;
             DrawText(g, title, new Rectangle(x, y, w, nameH), w > 420 * scale ? 26F : 20F, true, ForeColor, true);
             y += nameH + spacer;
-            DrawText(g, "音訊波形", new Rectangle(x, y, w, captionH), 9.5F, false, Muted, false);
-            DrawWave(g, new Rectangle(x, y + captionH, w, waveH), 64);
+            DrawText(g, "頻譜　低頻 → 高頻", new Rectangle(x, y, w, captionH), 9.5F, false, Muted, false);
+            DrawSpectrum(g, new Rectangle(x, y + captionH, w, waveH), 64);
         }
 
         private void DrawText(Graphics g, string value, Rectangle box, float size, bool bold, Color ink, bool wrap)
@@ -149,13 +149,17 @@ namespace CaiPlayer
                 g.FillEllipse(brush, x + (disc - hole) / 2, y + (disc - hole) / 2, hole, hole);
         }
 
-        private void DrawWave(Graphics g, Rectangle box, int limit)
+        private void DrawSpectrum(Graphics g, Rectangle box, int limit)
         {
             if (box.Width <= 2 || box.Height <= 2) return;
-            float mid = box.Top + box.Height / 2F;
+            float bottom = box.Bottom - 1;
             using (var pen = new Pen(dark ? Color.FromArgb(70, 83, 88) : Color.FromArgb(195, 202, 200)))
-                g.DrawLine(pen, box.Left, mid, box.Right - 1, mid);
-            if (!hasSamples || levels == null || levels.Length == 0) return;
+                g.DrawLine(pen, box.Left, bottom, box.Right - 1, bottom);
+            if (!hasSamples || levels == null || levels.Length == 0)
+            {
+                if (expanded && status == "播放中") DrawText(g, "尚無頻譜資料", box, 9F, false, Muted, false);
+                return;
+            }
             int count = Math.Min(limit, Math.Min(levels.Length, Math.Max(1, box.Width / 3)));
             float step = (float)box.Width / count;
             using (var brush = new SolidBrush(Accent))
@@ -165,7 +169,7 @@ namespace CaiPlayer
                     for (int j = i * levels.Length / count; j < (i + 1) * levels.Length / count; j++)
                         peak = Math.Max(peak, levels[j]);
                     float h = Math.Min(1F, peak) * (box.Height - 2);
-                    if (h >= 1F) g.FillRectangle(brush, box.Left + i * step, mid - h / 2, Math.Max(1, step * .72F), h);
+                    if (h >= 1F) g.FillRectangle(brush, box.Left + i * step, bottom - h, Math.Max(1, step * .72F), h);
                 }
         }
     }

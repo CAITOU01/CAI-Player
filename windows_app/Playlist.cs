@@ -30,7 +30,12 @@ namespace CaiPlayer
     {
         public string Name = "我的播放清單";
         public string SourcePath = "";
-        public string MusicRoot = "";
+        public string[] MusicRoots = new string[0];
+        public string MusicRoot
+        {
+            get { return MusicRoots.Length == 0 ? "" : MusicRoots[0]; }
+            set { MusicRoots = String.IsNullOrEmpty(value) ? new string[0] : new[] { value }; }
+        }
         public List<Track> Tracks = new List<Track>();
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
         private static readonly Regex Tokens = new Regex(@"\{(index|title|path|duration|sep)\}");
@@ -38,7 +43,7 @@ namespace CaiPlayer
         public static Playlist Load(string filename)
         {
             string full = Path.GetFullPath(filename);
-            var p = new Playlist { SourcePath = full, Name = Path.GetFileNameWithoutExtension(full), MusicRoot = Path.GetDirectoryName(full) };
+            var p = new Playlist { SourcePath = full, Name = Path.GetFileNameWithoutExtension(full) };
             string content = File.ReadAllText(full, Utf8).TrimStart('\uFEFF');
             if (content.TrimStart().StartsWith("{", StringComparison.Ordinal))
                 p.ParseJson(content);
@@ -128,7 +133,11 @@ namespace CaiPlayer
 
         public string Resolve(Track track)
         {
-            string path = track.Path;
+            return ResolvePath(track.Path);
+        }
+
+        internal string ResolvePath(string path)
+        {
             Uri uri;
             if (string.IsNullOrWhiteSpace(path)) throw new FormatException("歌曲路徑是空白。");
             if (TryStream(path, out uri)) return path;
@@ -136,9 +145,16 @@ namespace CaiPlayer
                 path = uri.LocalPath;
             else if (!Path.IsPathRooted(path) && Regex.IsMatch(path, @"^[A-Za-z][A-Za-z0-9+.\-]*:"))
                 throw new FormatException("歌曲來源需使用本機檔案或 HTTP(S) 網址。");
-            string root = !string.IsNullOrEmpty(MusicRoot) ? MusicRoot :
-                (!string.IsNullOrEmpty(SourcePath) ? Path.GetDirectoryName(SourcePath) : Environment.CurrentDirectory);
-            return Path.GetFullPath(Path.Combine(root, path));
+            if (Path.IsPathRooted(path)) return Path.GetFullPath(path);
+            foreach (string root in MusicRoots)
+            {
+                string candidate = Path.GetFullPath(Path.Combine(root, path));
+                if (File.Exists(candidate)) return candidate;
+            }
+            string fallback = String.IsNullOrEmpty(SourcePath) ? Environment.CurrentDirectory : Path.GetDirectoryName(SourcePath);
+            string adjacent = Path.GetFullPath(Path.Combine(fallback, path));
+            if (MusicRoots.Length == 0 || (!String.IsNullOrEmpty(SourcePath) && File.Exists(adjacent))) return adjacent;
+            return Path.GetFullPath(Path.Combine(MusicRoots[0], path));
         }
 
         internal string ExportPath(Track track, string outputDir, PathStyle style)

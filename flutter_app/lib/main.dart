@@ -6,7 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
-import 'package:flutter_soloud/flutter_soloud.dart' show SoLoud;
+import 'dart:ui' as ui;
 import 'package:just_audio/just_audio.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +15,9 @@ import 'play_order.dart';
 import 'export_paths.dart';
 import 'song_details.dart';
 import 'now_playing.dart';
+import 'music_folders.dart';
+import 'music_folders_dialog.dart';
+import 'saved_playlists.dart';
 
 void main() => runApp(const CaiApp());
 
@@ -28,7 +31,7 @@ class _CaiAppState extends State<CaiApp> {
   ThemeMode mode = ThemeMode.system;
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'CAI Player V0.03 Alpha', debugShowCheckedModeBanner: false,
+    title: 'CAI Player V0.05 Alpha', debugShowCheckedModeBanner: false,
     theme: ThemeData(colorSchemeSeed: const Color(0xff306568), useMaterial3: true),
     darkTheme: ThemeData(colorSchemeSeed: const Color(0xff76c9c2), brightness: Brightness.dark, useMaterial3: true),
     themeMode: mode,
@@ -48,7 +51,12 @@ class _PlayerHomeState extends State<PlayerHome> {
   final order = PlayOrder();
   CaiPlaylist playlist = CaiPlaylist('我的播放清單', []);
   String? playlistFile;
-  String? musicRoot;
+  List<String> musicRoots = [];
+  bool folderLibrary = true;
+  int folderScan = 0;
+  String? savedId;
+  Future<void> pendingSave = Future.value();
+  late final Future<void> foldersReady;
   CaiTrack? current;
   int playbackRequest = 0;
   bool busy = false;
@@ -58,9 +66,11 @@ class _PlayerHomeState extends State<PlayerHome> {
   bool expanded = false;
   int scanRequest = 0;
   Uint8List? cover;
-  Float32List? wave;
-  String? displayFile, sampledFile;
-  bool sampling = false;
+  int? sampleRate;
+  String? displayFile;
+  int detailsRequest = 0;
+  late final chartPositions = audio.createPositionStream(
+    minPeriod: const Duration(milliseconds: 50), maxPeriod: const Duration(milliseconds: 50));
   late final StreamSubscription<Duration?> durationChanges;
   late final StreamSubscription<ProcessingState> completion;
   String format = 'm3u8';
@@ -74,11 +84,10 @@ class _PlayerHomeState extends State<PlayerHome> {
   @override
   void initState() {
     super.initState();
-    _restore();
+    foldersReady = _guard(_restore);
     durationChanges = audio.durationStream.listen((value) {
       if (!mounted || busy || current == null || value == null || value.inMilliseconds <= 0 || audio.duration != value) return;
       _recordDuration(current!, value);
-      unawaited(_loadWave());
     });
     completion = audio.processingStateStream.distinct().listen((state) {
       if (state == ProcessingState.completed && audio.processingState == state &&
@@ -104,7 +113,8 @@ class _PlayerHomeState extends State<PlayerHome> {
     for (final track in List<CaiTrack>.of(playlist.tracks)) {
       if (!mounted || request != scanRequest) return;
       String path;
-      try { path = _resolve(track); } catch (_) { continue; }
+      try { path = await _resolve(track); } catch (_) { continue; }
+      if (!mounted || request != scanRequest) return;
       if (path.startsWith('https://') || path.startsWith('http://')) continue;
       if (measuredAt.containsKey(track) && measuredAt[track] != path) {
         measuredAt.remove(track);
@@ -121,26 +131,39 @@ class _PlayerHomeState extends State<PlayerHome> {
 
   void _showFile(String? path) {
     if (path == displayFile) return;
-    setState(() { displayFile = path; cover = null; wave = null; sampledFile = null; });
-    if (path != null) unawaited(compute(localCover, path).then((image) {
-      if (mounted && displayFile == path) setState(() => cover = image);
-    }));
+    final request = ++detailsRequest;
+    setState(() { displayFile = path; cover = null; sampleRate = null; });
+    if (path != null) unawaited(_loadDetails(path, request));
   }
 
-  Future<void> _loadWave() async {
-    final path = displayFile;
-    final seconds = audio.duration?.inSeconds ?? current?.duration ?? -1;
-    if (busy || sampling || path == null || sampledFile == path || seconds <= 0) return;
-    sampling = true;
-    sampledFile = path;
-    try {
-      final values = await SoLoud.instance.readSamplesFromFile(path, (seconds * 25).clamp(64, 60000), average: true);
-      if (mounted && displayFile == path) setState(() => wave = values);
-    } catch (_) {
-      // A stream or container without accessible PCM keeps the baseline visible.
-    } finally {
-      sampling = false;
-      if (mounted && displayFile != path) unawaited(_loadWave());
+  Future<void> _loadDetails(String path, int request) async {
+    bool currentRequest() => mounted && detailsRequest == request;
+    final details = await compute(localDetails, path);
+    if (!currentRequest()) return;
+    setState(() => sampleRate = details.rate);
+    // Try decoding each candidate. A broken front cover must not hide valid alternatives.
+    Future<bool> display(Uint8List bytes) async {
+      if (!currentRequest()) return true;
+      try {
+        final codec = await ui.instantiateImageCodec(bytes, targetWidth: 96, allowUpscaling: false);
+        try {
+          final frame = await codec.getNextFrame();
+          frame.image.dispose();
+        } finally { codec.dispose(); }
+        if (currentRequest()) setState(() => cover = bytes);
+        return true;
+      } catch (_) { return false; }
+    }
+    for (final bytes in details.pictures) {
+      if (await display(bytes)) return;
+    }
+    for (final path in details.imagePaths) {
+      if (!currentRequest()) return;
+      try {
+        final file = File(path);
+        final size = await file.length();
+        if (size > 0 && size <= maxCoverBytes && await display(await file.readAsBytes())) return;
+      } on FileSystemException { continue; }
     }
   }
 
@@ -154,16 +177,197 @@ class _PlayerHomeState extends State<PlayerHome> {
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    setState(() => musicRoot = prefs.getString('musicRoot'));
-    unawaited(_scanDurations());
+    musicRoots = readMusicFolders(prefs);
+    if (folderLibrary && musicRoots.isNotEmpty) {
+      unawaited(_guard(_refreshFolders));
+    } else {
+      unawaited(_scanDurations());
+    }
   }
-  Future<void> _pickRoot() async {
-    final dir = await FilePicker.platform.getDirectoryPath(dialogTitle: '選擇音樂資料夾');
-    if (dir == null) return;
+
+  void _markEdited() {
+    edited = true;
+    folderLibrary = false;
+    folderScan++;
+    final id = savedId;
+    if (id != null) {
+      final generation = folderScan;
+      final data = _snapshot(id).encode();
+      pendingSave = pendingSave.then((_) => _guard(() async {
+        await _writeSaved(id, data);
+        if (mounted && id == savedId && generation == folderScan) setState(() => edited = false);
+      }));
+    }
+  }
+
+  SavedPlaylist _snapshot(String id) => SavedPlaylist(id, playlist, playlistFile,
+      {for (var i = 0; i < playlist.tracks.length; i++)
+        if (localFiles.containsKey(playlist.tracks[i])) i: localFiles[playlist.tracks[i]]!});
+
+  Future<void> _writeSaved(String id, String data) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('musicRoot', dir);
-    if (mounted) setState(() { musicRoot = dir; status = '音樂資料夾已設為 $dir'; });
-    if (mounted) unawaited(_scanDurations());
+    if (!await prefs.setString(id, data)) throw const FileSystemException('無法儲存播放清單');
+  }
+
+  Future<bool> _confirm(String title, String message, String action) async =>
+      await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: Text(title), content: Text(message),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(action))])) ?? false;
+
+  Future<String?> _playlistName(String initial) async {
+    var name = initial;
+    return showDialog<String>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('播放清單名稱'), content: TextFormField(initialValue: initial,
+          maxLength: 120, autofocus: true, onChanged: (value) => name = value.trim()),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+        FilledButton(onPressed: () { if (name.isNotEmpty) Navigator.pop(ctx, name); }, child: const Text('儲存'))]));
+  }
+
+  Future<void> _managePlaylists([CaiTrack? track]) async {
+    await pendingSave;
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final choice = await choosePlaylist(context, SavedPlaylist.read(prefs), addTrack: track != null);
+    if (!mounted || choice == null) return;
+    var entry = choice.entry;
+    switch (choice.action) {
+      case PlaylistAction.append:
+        if (entry == null || track == null) return;
+        final path = await _resolve(track);
+        if (!mounted) return;
+        final copy = CaiTrack(title: track.title, path: path, duration: track.duration);
+        if (entry.id == savedId) {
+          setState(() { playlist.tracks.add(copy); _markEdited(); });
+        } else {
+          entry.playlist.tracks.add(copy);
+          await _writeSaved(entry.id, entry.encode());
+        }
+        if (mounted) setState(() => status = '已加入「${entry!.playlist.name}」');
+        return;
+      case PlaylistAction.remove:
+        if (entry == null || !await _confirm('刪除播放清單？', '刪除「${entry.playlist.name}」後，音檔會保留。', '刪除')) return;
+        if (!await prefs.remove(entry.id)) throw const FileSystemException('無法刪除播放清單');
+        if (mounted && savedId == entry.id) setState(() => savedId = null);
+        return;
+      case PlaylistAction.rename:
+        if (entry == null) return;
+        final name = await _playlistName(entry.playlist.name);
+        if (name == null) return;
+        entry.playlist.name = name;
+        await _writeSaved(entry.id, entry.encode());
+        if (mounted && savedId == entry.id) setState(() => playlist.name = name);
+        return;
+      case PlaylistAction.saveCopy:
+        final name = await _playlistName(playlist.name);
+        if (!mounted || name == null) return;
+        final copy = _snapshot('${SavedPlaylist.prefix}${DateTime.now().microsecondsSinceEpoch}');
+        final named = SavedPlaylist(copy.id, CaiPlaylist(name, copy.playlist.tracks), copy.source, copy.bindings);
+        await _writeSaved(named.id, named.encode());
+        if (mounted) setState(() {
+          savedId = named.id; playlist.name = name; folderLibrary = false; ++folderScan;
+          edited = false; status = '已儲存「$name」';
+        });
+        return;
+      case PlaylistAction.create:
+      case PlaylistAction.open:
+        if (edited && !await _confirm('取代尚未儲存的清單？', '目前佇列將由另一份清單取代。', '繼續')) return;
+        if (!mounted) return;
+        if (entry == null) {
+          final name = await _playlistName('');
+          if (name == null) return;
+          entry = SavedPlaylist('${SavedPlaylist.prefix}${DateTime.now().microsecondsSinceEpoch}', CaiPlaylist(name, []), null, {});
+          await _writeSaved(entry.id, entry.encode());
+        }
+        if (!mounted) return;
+        final opened = entry;
+        ++playbackRequest; ++folderScan;
+        setState(() {
+          savedId = opened.id; playlist = opened.playlist; playlistFile = opened.source;
+          folderLibrary = false; edited = false; current = null; busy = false;
+          measuredAt.clear(); order.reset(); localFiles.clear();
+          for (final binding in opened.bindings.entries) {
+            if (binding.key >= 0 && binding.key < playlist.tracks.length) localFiles[playlist.tracks[binding.key]] = binding.value;
+          }
+          status = '已開啟「${playlist.name}」';
+        });
+        _showFile(null); unawaited(_scanDurations()); await audio.stop();
+    }
+  }
+
+  Future<void> _refreshFolders() async {
+    final request = ++folderScan;
+    setState(() => status = '正在掃描音樂資料夾…');
+    final result = await scanMusicFolders(musicRoots);
+    if (!mounted || request != folderScan || !folderLibrary) return;
+    final previous = {for (final track in playlist.tracks) track.path: track};
+    final songs = [for (final file in result.files)
+      previous.remove(file) ?? CaiTrack(title: p.basenameWithoutExtension(file), path: file)];
+    final stop = current != null && previous.containsKey(current!.path);
+    if (stop) ++playbackRequest;
+    setState(() {
+      for (final removed in previous.values) {
+        order.remove(removed);
+        measuredAt.remove(removed);
+        localFiles.remove(removed);
+      }
+      if (stop) { current = null; busy = false; }
+      playlist = CaiPlaylist('資料夾歌庫', songs);
+      status = result.unavailable.isEmpty ? '歌庫已更新，共 ${songs.length} 首' :
+          '歌庫已更新，無法讀取：${result.unavailable.join("、")}';
+    });
+    unawaited(_scanDurations());
+    if (stop) { _showFile(null); await audio.stop(); }
+  }
+
+  Future<void> _pickRoot() async {
+    await foldersReady;
+    if (!mounted) return;
+    final choice = await showDialog<FolderChoice>(context: context, builder: (_) =>
+        MusicFoldersDialog(roots: musicRoots, library: folderLibrary));
+    if (!mounted || choice == null) return;
+    final switchLibrary = choice.openLibrary && !folderLibrary;
+    if (switchLibrary && edited) {
+      final replace = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+        title: const Text('取代尚未匯出的清單？'), content: const Text('目前清單將由資料夾歌庫取代。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('開啟歌庫')),
+        ]));
+      if (!mounted || replace != true) return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await saveMusicFolders(prefs, choice.roots);
+    if (!mounted) return;
+    setState(() {
+      musicRoots = choice.roots;
+      if (switchLibrary) {
+        ++playbackRequest;
+        ++scanRequest;
+        current = null; busy = false; edited = false; folderLibrary = true; savedId = null;
+        order.reset(); localFiles.clear(); measuredAt.clear();
+        playlistFile = null; playlist = CaiPlaylist('資料夾歌庫', []);
+      }
+      status = '已儲存音樂資料夾';
+    });
+    if (switchLibrary) { _showFile(null); await audio.stop(); }
+    if (!mounted) return;
+    if (folderLibrary) {
+      await _refreshFolders();
+    } else {
+      final track = current;
+      final request = playbackRequest;
+      unawaited(_scanDurations());
+      if (track != null && displayFile != null) {
+        String? resolved;
+        try { resolved = await _resolve(track); } on FileSystemException { resolved = null; }
+        if (mounted && request == playbackRequest && resolved != displayFile) {
+          ++playbackRequest;
+          setState(() { current = null; busy = false; });
+          _showFile(null);
+          await audio.stop();
+        }
+      }
+    }
   }
   Future<void> _import() async {
     try {
@@ -190,7 +394,7 @@ class _PlayerHomeState extends State<PlayerHome> {
       ++playbackRequest;
       setState(() {
         busy = false; current = null; order.reset(); measuredAt.clear();
-        playlist = parsed; playlistFile = file.path; edited = false; localFiles.clear();
+        playlist = parsed; playlistFile = file.path; edited = false; folderLibrary = false; savedId = null; localFiles.clear();
         status = '已匯入 ${parsed.tracks.length} 首歌曲';
       });
       _showFile(null);
@@ -198,15 +402,16 @@ class _PlayerHomeState extends State<PlayerHome> {
       await audio.stop();
     } catch (e) { _error('無法匯入清單：$e'); }
   }
-  String _resolve(CaiTrack t) {
-    if (localFiles.containsKey(t)) return localFiles[t]!;
+  Future<String> _resolve(CaiTrack t) async {
+    final bound = localFiles[t];
+    if (bound != null && await File(bound).exists()) return bound;
     final path = t.path;
     final uri = Uri.tryParse(path);
     if (uri?.scheme == 'https' || uri?.scheme == 'http') return path;
     if (uri?.scheme == 'file') return uri!.toFilePath();
     final local = path.replaceAll('\\', Platform.pathSeparator);
     if (p.isAbsolute(local) || RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(path)) return local;
-    final root = musicRoot ?? (playlistFile == null ? null : p.dirname(playlistFile!));
+    final root = await findMusicRoot(path, musicRoots, playlistFile == null ? null : p.dirname(playlistFile!));
     if (root == null) throw const FileSystemException('請先選擇音樂資料夾，或從歌曲選單指定檔案');
     return p.normalize(p.join(root, local));
   }
@@ -217,7 +422,8 @@ class _PlayerHomeState extends State<PlayerHome> {
     try {
       await audio.stop();
       if (request != playbackRequest || !mounted) return;
-      final source = _resolve(track);
+      final source = await _resolve(track);
+      if (request != playbackRequest || !mounted) return;
       final online = RegExp(r'^https?://', caseSensitive: false).hasMatch(source);
       _showFile(online ? null : source);
       if (online) {
@@ -230,7 +436,6 @@ class _PlayerHomeState extends State<PlayerHome> {
       if (request != playbackRequest || !mounted) return;
       setState(() { current = track; busy = false; status = track.title; });
       if (audio.duration != null) _recordDuration(track, audio.duration!);
-      unawaited(_loadWave());
       await audio.play();
     } catch (e) {
       if (request == playbackRequest && mounted) {
@@ -242,7 +447,7 @@ class _PlayerHomeState extends State<PlayerHome> {
   Future<void> _addAudio() async {
     final result = await FilePicker.platform.pickFiles(allowMultiple: true,
       dialogTitle: '加入音檔', type: FileType.custom,
-      allowedExtensions: ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'opus', 'aiff', 'wma']);
+      allowedExtensions: audioExtensions);
     if (result == null || !mounted) return;
     final mobile = Platform.isAndroid || Platform.isIOS;
     setState(() {
@@ -252,7 +457,7 @@ class _PlayerHomeState extends State<PlayerHome> {
         playlist.tracks.add(track);
         if (mobile) localFiles[track] = f.path!;
       }
-      edited = true; status = '已加入音檔';
+      _markEdited(); status = '已加入音檔';
     });
     unawaited(_scanDurations());
   }
@@ -261,6 +466,7 @@ class _PlayerHomeState extends State<PlayerHome> {
     final path = result?.files.single.path;
     if (path != null && mounted) setState(() {
       localFiles[track] = path; track.duration = -1; measuredAt.remove(track);
+      if (savedId != null) _markEdited();
       status = '已為「${track.title}」指定本機檔案';
     });
     if (path != null && mounted) unawaited(_scanDurations());
@@ -285,7 +491,7 @@ class _PlayerHomeState extends State<PlayerHome> {
       final uri = Uri.parse(url);
       final name = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
       playlist.tracks.add(CaiTrack(title: name.isEmpty ? uri.host : name, path: url));
-      edited = true;
+      _markEdited();
     });
   }
   Future<void> _guard(Future<void> Function() operation) async {
@@ -305,21 +511,23 @@ class _PlayerHomeState extends State<PlayerHome> {
     ));
     if (save == true && mounted) setState(() {
       if (track.path != path.trim()) { localFiles.remove(track); track.duration = -1; measuredAt.remove(track); }
-      track.title = title.trim(); track.path = path.trim(); edited = true;
+      track.title = title.trim(); track.path = path.trim(); _markEdited();
     });
     if (save == true && mounted) unawaited(_scanDurations());
   }
   bool get _mobileExport => Platform.isAndroid || Platform.isIOS;
 
-  Uint8List _exportBytes(String? folder) {
-    final root = musicRoot ?? (!_mobileExport && playlistFile != null ? p.dirname(playlistFile!) : null);
-    final exported = CaiPlaylist(playlist.name, [
-      for (final track in playlist.tracks) CaiTrack(
+  Future<Uint8List> _exportBytes(String? folder) async {
+    final playlistFolder = !_mobileExport && playlistFile != null ? p.dirname(playlistFile!) : null;
+    final exported = CaiPlaylist(playlist.name, []);
+    for (final track in List.of(playlist.tracks)) {
+      final root = pathStyle == ExportPathStyle.original ? null : await findMusicRoot(track.path, musicRoots, playlistFolder);
+      exported.tracks.add(CaiTrack(
         title: track.title, duration: track.duration,
         path: formatSongPath(track.path, pathStyle, musicRoot: root, exportFolder: folder,
             boundFile: _mobileExport ? null : localFiles[track]),
-      ),
-    ]);
+      ));
+    }
     final text = format == 'json' ? PlaylistCodec.writeJson(exported)
         : format == 'custom' ? PlaylistCodec.writeTemplate(exported, header: header, item: item, footer: footer)
         : PlaylistCodec.writeM3u(exported);
@@ -337,7 +545,7 @@ class _PlayerHomeState extends State<PlayerHome> {
       if (_mobileExport && pathStyle == ExportPathStyle.relative) {
         final folder = await FilePicker.platform.getDirectoryPath(dialogTitle: '選擇匯出資料夾');
         if (folder == null) return;
-        final bytes = _exportBytes(folder);
+        final bytes = await _exportBytes(folder);
         // A mobile save dialog consumes bytes before the destination is known.
         // Write into the chosen folder so every relative path has the correct base.
         final file = File(p.join(folder, fileName));
@@ -356,9 +564,9 @@ class _PlayerHomeState extends State<PlayerHome> {
         output = file.path;
       } else {
         output = await FilePicker.platform.saveFile(dialogTitle: '匯出播放清單', fileName: fileName,
-            type: FileType.any, bytes: _mobileExport ? _exportBytes(null) : null);
+            type: FileType.any, bytes: _mobileExport ? await _exportBytes(null) : null);
         if (output == null) return;
-        if (!_mobileExport) await _writeExport(output, _exportBytes(p.dirname(output)));
+        if (!_mobileExport) await _writeExport(output, await _exportBytes(p.dirname(output)));
       }
       if (mounted) setState(() { edited = false; status = _mobileExport && pathStyle != ExportPathStyle.relative
           ? '已匯出播放清單' : '已匯出 $output'; });
@@ -444,6 +652,28 @@ class _PlayerHomeState extends State<PlayerHome> {
     }
   }
 
+  Future<void> _audioControls() async {
+    var gain = audio.volume.clamp(0.0, 1.0).toDouble();
+    var speed = audio.speed;
+    var audible = gain > 0 ? gain : 0.75;
+    await showDialog<void>(context: context, builder: (ctx) => StatefulBuilder(
+      builder: (ctx, update) => AlertDialog(title: const Text('播放控制'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Row(children: [
+            IconButton(tooltip: gain == 0 ? '取消靜音' : '靜音', icon: Icon(gain == 0 ? Icons.volume_off : Icons.volume_up),
+              onPressed: () { update(() { if (gain == 0) { gain = audible; } else { audible = gain; gain = 0; } });
+                unawaited(_guard(() => audio.setVolume(gain))); }),
+            Expanded(child: Slider(value: gain, label: '${(gain * 100).round()}%', onChanged: (v) {
+              update(() { gain = v; if (v > 0) audible = v; }); unawaited(_guard(() => audio.setVolume(v)));
+            })),
+          ]),
+          DropdownButtonFormField<double>(value: speed, decoration: const InputDecoration(labelText: '播放速度'),
+            items: [for (final rate in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]) DropdownMenuItem(value: rate, child: Text('$rate×'))],
+            onChanged: (v) { if (v != null) { update(() => speed = v); unawaited(_guard(() => audio.setSpeed(v))); } }),
+        ]),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('完成'))])));
+  }
+
   Future<void> _skip({required bool forward}) async {
     final track = current;
     if (busy || track == null) return;
@@ -462,7 +692,7 @@ class _PlayerHomeState extends State<PlayerHome> {
       playlist.tracks.remove(track);
       localFiles.remove(track);
       measuredAt.remove(track);
-      edited = true;
+      _markEdited();
     });
     if (stop) { _showFile(null); await audio.stop(); }
   }
@@ -476,9 +706,8 @@ class _PlayerHomeState extends State<PlayerHome> {
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final knownDuration = Duration(seconds: current != null && current!.duration > 0 ? current!.duration : 0);
-    final totalDuration = audio.duration ?? knownDuration;
     final nowPlaying = NowPlaying(title: current?.title ?? '尚未播放', expanded: expanded,
-        cover: cover, samples: wave, length: totalDuration, positions: audio.positionStream,
+        cover: cover, path: displayFile, rate: sampleRate, positions: chartPositions,
         position: audio.position, onToggle: _toggleView);
     return CallbackShortcuts(bindings: {
       const SingleActivator(LogicalKeyboardKey.f11): _toggleView,
@@ -492,6 +721,7 @@ class _PlayerHomeState extends State<PlayerHome> {
           dark ? 'assets/logo_dark.png' : 'assets/logo_light.png', fit: BoxFit.contain)),
         title: const Text('CAI Player'),
         actions: [
+          IconButton(tooltip: '我的播放清單', onPressed: () => _guard(_managePlaylists), icon: const Icon(Icons.queue_music)),
           IconButton(tooltip: expanded ? '返回清單' : '大視窗模式',
               onPressed: _toggleView, icon: Icon(expanded ? Icons.close_fullscreen : Icons.open_in_full)),
           IconButton(tooltip: dark ? '切換淺色模式' : '切換深色模式',
@@ -512,7 +742,7 @@ class _PlayerHomeState extends State<PlayerHome> {
               PopupMenuItem(value: 'import', child: Text('匯入播放清單')),
               PopupMenuItem(value: 'add', child: Text('加入音檔')),
               PopupMenuItem(value: 'stream', child: Text('加入串流網址')),
-              PopupMenuItem(value: 'root', child: Text('選擇音樂資料夾')),
+              PopupMenuItem(value: 'root', child: Text('音樂資料夾')),
               PopupMenuItem(value: 'format', child: Text('自訂匯出格式')),
               PopupMenuItem(value: 'export', child: Text('匯出播放清單')),
             ]),
@@ -524,7 +754,7 @@ class _PlayerHomeState extends State<PlayerHome> {
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(playlist.name, maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleLarge),
-              Text('${playlist.tracks.length} 首歌曲　·　V0.03 Alpha',
+              Text('${playlist.tracks.length} 首歌曲　·　V0.05 Alpha',
                 style: Theme.of(context).textTheme.bodySmall),
             ])),
             IconButton(tooltip: '加入音檔', icon: const Icon(Icons.add), onPressed: () => _guard(_addAudio)),
@@ -541,7 +771,7 @@ class _PlayerHomeState extends State<PlayerHome> {
               onReorder: (from, to) => setState(() {
                 final moved = playlist.tracks.removeAt(from);
                 playlist.tracks.insert(to > from ? to - 1 : to, moved);
-                edited = true;
+                _markEdited();
               }),
               itemBuilder: (_, i) {
                 final track = playlist.tracks[i];
@@ -556,11 +786,13 @@ class _PlayerHomeState extends State<PlayerHome> {
                   trailing: PopupMenuButton<String>(tooltip: '歌曲選單',
                     onSelected: (action) => _guard(() async {
                       switch (action) {
+                        case 'playlist': await _managePlaylists(track); break;
                         case 'edit': await _edit(i); break;
                         case 'bind': await _bindFile(track); break;
                         case 'remove': await _remove(track); break;
                       }
                     }), itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'playlist', child: Text('加入已儲存的播放清單')),
                       PopupMenuItem(value: 'edit', child: Text('編輯歌曲')),
                       PopupMenuItem(value: 'bind', child: Text('指定本機音檔')),
                       PopupMenuItem(value: 'remove', child: Text('從清單移除')),
@@ -607,6 +839,7 @@ class _PlayerHomeState extends State<PlayerHome> {
               PopupMenuItem(value: PlaylistRepeat.one, child: Text('單曲循環')),
               PopupMenuItem(value: PlaylistRepeat.all, child: Text('播放清單循環')),
             ]),
+          IconButton(tooltip: '音量與播放速度', onPressed: _audioControls, icon: const Icon(Icons.tune)),
         ]),
         Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 9),
           child: Text(status, maxLines: 2, overflow: TextOverflow.ellipsis,
