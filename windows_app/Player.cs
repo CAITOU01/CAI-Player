@@ -61,6 +61,7 @@ namespace CaiPlayer
         private Track active, dragItem;
         private bool dark, playing, ready, dirty, seeking;
         private double duration;
+        private int shownSecond = -1, shownDuration = -1;
         private double playbackSpeed = 1;
         private readonly ContextMenuStrip speedMenu = new ContextMenuStrip();
         private const string Product = "CAI Player";
@@ -103,8 +104,21 @@ namespace CaiPlayer
             BuildDeck();
             SetTheme();
             RefreshList(null);
-            timer.Interval = 55;
-            timer.Tick += delegate { UpdateTime(); UpdateSpectrum(); };
+            timer.Interval = 250;
+            timer.Tick += delegate {
+                bool mainVisible = Visible && WindowState != FormWindowState.Minimized;
+                bool chartVisible = miniBanner != null || (mainVisible && !(expanded && videoHost != null));
+                int interval = ready && playing && chartVisible ? 55 : (mainVisible && playing && captionText != null ? 80 : 250);
+                if (timer.Interval != interval) timer.Interval = interval;
+                if (miniPlay != null) {
+                    if (miniPlay.AccessibleName != playButton.AccessibleName) Glyph(miniPlay, playButton.Text, playButton.AccessibleName);
+                    miniPlay.Enabled = playButton.Enabled;
+                }
+                if (!ready || (!mainVisible && miniBanner == null)) return;
+                double current = seeking ? duration * progress.Value / 1000 : Position;
+                if (mainVisible) UpdateTime(current);
+                if (chartVisible) UpdateSpectrum(current);
+            };
             timer.Start();
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing && !MayReplace()) e.Cancel = true; };
             FormClosed += delegate { timer.Stop(); timer.Dispose(); StopMetadataScan(); ResetPlayer(); if (brand.Image != null) brand.Image.Dispose(); tips.Dispose(); repeatMenu.Dispose(); speedMenu.Dispose(); symbolFont.Dispose(); };
@@ -418,7 +432,7 @@ namespace CaiPlayer
             deck.ResumeLayout(true);
             page.ResumeLayout(true);
             WindowState = expanded ? FormWindowState.Maximized : previousSize;
-            UpdateSpectrum();
+            if (ready) UpdateSpectrum(Position);
         }
 
         private NowPlayingView miniBanner;
@@ -456,11 +470,11 @@ namespace CaiPlayer
             if (miniBanner != null) miniBanner.SetTrack(nowTitle.Text, state.Text, currentCover);
         }
 
-        private void UpdateSpectrum()
+        private void UpdateSpectrum(double current)
         {
             bool available = ready && signal != null &&
-                signal.TryGetLevels(seeking ? duration * progress.Value / 1000 : Position, levels);
-            if (available) (expanded ? stage : banner).SetSignal(true, levels);
+                signal.TryGetLevels(current, levels);
+            if (available && miniBanner == null) (expanded ? stage : banner).SetSignal(true, levels);
             else if (!ready || signal == null) {
                 banner.SetSignal(false, null);
                 stage.SetSignal(false, null);
@@ -468,8 +482,6 @@ namespace CaiPlayer
             if (miniBanner != null) {
                 if (available) miniBanner.SetSignal(true, levels);
                 else if (!ready || signal == null) miniBanner.SetSignal(false, null);
-                if (miniPlay.AccessibleName != playButton.AccessibleName) Glyph(miniPlay, playButton.Text, playButton.AccessibleName);
-                miniPlay.Enabled = playlist.Tracks.Count > 0;
             }
         }
 
@@ -838,7 +850,7 @@ namespace CaiPlayer
             else if (active != null && active.Duration > 0) duration = active.Duration;
             progress.Enabled = duration > 0;
             state.Text = playing ? "播放中" : "已暫停";
-            UpdateTime();
+            UpdateTime(Position);
         }
 
         private void Ended(object sender, EventArgs e)
@@ -877,6 +889,7 @@ namespace CaiPlayer
             if (signal != null) { signal.Dispose(); signal = null; }
             banner.SetSignal(false, null);
             stage.SetSignal(false, null);
+            if (miniBanner != null) miniBanner.SetSignal(false, null);
             ClearTrackArt();
             var old = media;
             media = null;
@@ -893,6 +906,7 @@ namespace CaiPlayer
             progress.Value = 0;
             progress.Enabled = false;
             time.Text = "0:00 / 0:00";
+            shownSecond = shownDuration = -1;
             Glyph(playButton, "\uE768", "播放");
             nowTitle.Text = "尚未播放";
             state.Text = "已停止";
@@ -929,7 +943,7 @@ namespace CaiPlayer
                 : String.Format("{0}:{1:00}", span.Minutes, span.Seconds);
         }
 
-        private void UpdateTime()
+        private void UpdateTime(double current)
         {
             if (!ready) return;
             if (duration <= 0)
@@ -942,10 +956,14 @@ namespace CaiPlayer
                 if (duration <= 0 && active != null && active.Duration > 0) duration = active.Duration;
                 progress.Enabled = duration > 0;
             }
-            double current = seeking ? duration * progress.Value / 1000 : Position;
             UpdateCaptions(current);
             if (!seeking && duration > 0) progress.Value = (int)Math.Max(0, Math.Min(1000, 1000 * current / duration));
-            time.Text = Stamp(current) + " / " + (duration > 0 ? Stamp(duration) : "—");
+            int second = (int)current, total = duration > 0 ? (int)duration : -1;
+            if (second != shownSecond || total != shownDuration) {
+                shownSecond = second;
+                shownDuration = total;
+                time.Text = Stamp(current) + " / " + (duration > 0 ? Stamp(duration) : "—");
+            }
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)

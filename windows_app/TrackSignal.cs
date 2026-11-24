@@ -52,8 +52,11 @@ namespace CaiPlayer
             {
                 if (stopped) return false;
                 int block = frame / FramesPerBlock;
-                requested = block;
-                Monitor.Pulse(gate);
+                if (requested != block)
+                {
+                    requested = block;
+                    Monitor.Pulse(gate);
+                }
                 float[][] spectra;
                 if (!cache.TryGetValue(block, out spectra)) return false;
                 int offset = frame - block * FramesPerBlock;
@@ -70,8 +73,7 @@ namespace CaiPlayer
             {
                 var pcm = reader.ToSampleProvider();
                 int rate = pcm.WaveFormat.SampleRate, channels = pcm.WaveFormat.Channels;
-                // Two overlapping frames keep the display continuous during block changes.
-                const int count = FramesPerBlock + 2;
+                const int count = FramesPerBlock;
                 var buffer = new float[(rate * count / FramesPerSecond + Window + 2) * channels];
                 var fft = new Complex[Window];
                 var hann = new float[Window];

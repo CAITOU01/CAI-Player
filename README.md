@@ -4,6 +4,8 @@ The portable Windows app and the cross-platform Flutter project share the same C
 
 ## Quick Start
 
+For 64-bit Intel and AMD PCs, download `CAI_Player_V0.05_Windows_x64_Optimized.zip`. It includes the x64 audio and artwork decoders. The `CAI_Player_V0.05_Windows.zip` package includes both x86 and x64 decoders. To build the smaller package locally, run `.\windows_app\build.ps1 -Platform x64`; the portable files are written to `windows_app/bin/x64`.
+
 Extract the Windows release package and open `CAI Player.exe`. Open **Music Folders** (音樂資料夾), type a full path or browse for a folder, then choose **Save** (儲存). You can add, remove and reorder folders. On startup, the player loads the saved folders and lists the audio files directly inside each one. Add a subfolder separately to include its songs. Open the folder settings and save again to rescan after adding files or reconnecting a drive.
 
 You can also import the included EDM playlist or drag audio files into the app. For an imported relative path, the player tries the saved folders in order and then the playlist's own directory. Saving folder settings keeps the current playlist open. To switch back to the folder library, select **Open folder library after saving** in the same dialog.

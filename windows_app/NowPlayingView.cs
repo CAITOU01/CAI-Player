@@ -12,6 +12,7 @@ namespace CaiPlayer
         private string title = "尚未播放", status = "已停止";
         private Image cover;
         private float[] levels;
+        private Rectangle chartBounds;
 
         public NowPlayingView(bool expanded)
         {
@@ -56,7 +57,7 @@ namespace CaiPlayer
                 if (!changed) return;
             }
             hasSamples = available;
-            if (Visible) Invalidate();
+            if (Visible && !chartBounds.IsEmpty) Invalidate(chartBounds);
         }
 
         private Color Accent { get { return dark ? Color.FromArgb(50, 202, 236) : Color.FromArgb(174, 64, 17); } }
@@ -67,7 +68,13 @@ namespace CaiPlayer
             base.OnPaint(e);
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            if (chartBounds.Contains(e.ClipRectangle))
+            {
+                DrawSpectrum(g, chartBounds, expanded ? 64 : 32);
+                return;
+            }
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            chartBounds = Rectangle.Empty;
             float scale = g.DpiX / 96F;
             if (expanded) DrawExpanded(g, scale);
             else DrawCompact(g, scale);
@@ -87,7 +94,8 @@ namespace CaiPlayer
             int textY = Math.Max(0, (Height - statusH - nameH) / 2);
             DrawText(g, status, new Rectangle(titleX, textY, titleW, statusH), 9F, false, Muted, false);
             DrawText(g, title, new Rectangle(titleX, textY + statusH, titleW, nameH), 13F, true, ForeColor, false);
-            DrawSpectrum(g, new Rectangle(Width - chartWidth - gap, (Height - size) / 2 + 4, chartWidth, size - 8), 32);
+            chartBounds = new Rectangle(Width - chartWidth - gap, (Height - size) / 2 + 4, chartWidth, size - 8);
+            DrawSpectrum(g, chartBounds, 32);
         }
 
         private void DrawExpanded(Graphics g, float scale)
@@ -111,7 +119,8 @@ namespace CaiPlayer
             y += captionH;
             DrawText(g, title, new Rectangle(x, y, w, nameH), w > 420 * scale ? 26F : 20F, true, ForeColor, true);
             y += nameH + spacer;
-            DrawSpectrum(g, new Rectangle(x, y, w, waveH), 64);
+            chartBounds = new Rectangle(x, y, w, waveH);
+            DrawSpectrum(g, chartBounds, 64);
             DrawSpectrumScale(g, new Rectangle(x, y + waveH, w, scaleH));
         }
 

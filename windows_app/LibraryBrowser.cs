@@ -96,7 +96,7 @@ namespace CaiPlayer
                 var songs = new List<LibrarySong>();
                 Action render = () => {
                     var query = search.Text.Trim();
-                    IEnumerable<LibrarySong> visible = songs.Where(s => new[] { s.Title, s.Artist, s.Album, s.Genre, s.Path }
+                    IEnumerable<LibrarySong> visible = query.Length == 0 ? songs : songs.Where(s => new[] { s.Title, s.Artist, s.Album, s.Genre, s.Path }
                         .Any(field => field.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0));
                     if (sort.SelectedIndex > 0) visible = visible.OrderBy(s => sort.SelectedIndex == 1 ? s.Title :
                         sort.SelectedIndex == 2 ? s.Artist : sort.SelectedIndex == 3 ? s.Album : s.Genre).ThenBy(s => s.Title);
@@ -126,21 +126,32 @@ namespace CaiPlayer
 
                         // The library is usable as soon as paths are known. Read tags afterward so
                         // one slow or damaged file cannot leave the whole window stuck on Loading.
-                        await Task.Run(delegate {
-                            for (int i = 0; i < found.Files.Count; i++)
-                            {
-                                if (System.Threading.Volatile.Read(ref generation) != request) return;
-                                var metadata = LibrarySong.Read(found.Files[i]);
-                                int index = i;
-                                try {
-                                    dialog.BeginInvoke((Action)delegate {
-                                        if (request != generation || dialog.IsDisposed || index >= songs.Count) return;
-                                        songs[index] = metadata;
-                                        if (index % 20 == 19 || index + 1 == found.Files.Count) render();
-                                    });
-                                } catch (InvalidOperationException) { return; }
-                            }
-                        });
+                        for (int start = 0; start < found.Files.Count; start += 64)
+                        {
+                            var batch = new LibrarySong[Math.Min(64, found.Files.Count - start)];
+                            await Task.Run(delegate {
+                                for (int i = 0; i < batch.Length; i++) {
+                                    if (System.Threading.Volatile.Read(ref generation) != request) return;
+                                    batch[i] = LibrarySong.Read(found.Files[start + i]);
+                                }
+                            });
+                            if (request != generation || dialog.IsDisposed) return;
+                            bool originalOrder = sort.SelectedIndex == 0 && search.Text.Trim().Length == 0;
+                            view.BeginUpdate();
+                            try {
+                                for (int i = 0; i < batch.Length; i++) {
+                                    var song = songs[start + i] = batch[i];
+                                    if (!originalOrder) continue;
+                                    var row = view.Items[start + i];
+                                    row.Tag = song;
+                                    row.Text = song.Title;
+                                    row.SubItems[1].Text = song.Artist;
+                                    row.SubItems[2].Text = song.Album;
+                                    row.SubItems[3].Text = song.Genre;
+                                }
+                            } finally { view.EndUpdate(); }
+                            if (!originalOrder && start + batch.Length == found.Files.Count) render();
+                        }
                     } catch (Exception e) {
                         if (!dialog.IsDisposed) {
                             dialog.Text = "音樂庫 · 載入失敗";
