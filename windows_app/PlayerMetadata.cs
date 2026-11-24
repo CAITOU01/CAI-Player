@@ -66,6 +66,8 @@ namespace CaiPlayer
                 var track = (Track)row.Tag;
                 string last;
                 if (!detectedAt.TryGetValue(track, out last) && track.Duration > 0) continue;
+                // A previously resolved absolute path is independent of folder search order.
+                if (track.Duration > 0 && String.Equals(track.Path, last, StringComparison.OrdinalIgnoreCase)) continue;
                 pending.Add(new DurationProbe { Track = track, Row = row, OriginalPath = track.Path,
                     LastPath = last, HasDuration = track.Duration > 0 });
             }

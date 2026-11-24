@@ -403,7 +403,8 @@ namespace CaiPlayer
             string label = ((ToolStripMenuItem)repeatMenu.Items[(int)order.Repeat]).Text;
             Glyph(repeat, order.Repeat == RepeatMode.One ? "\uE8ED" : "\uE8EE", label);
             repeat.Tag = order.Repeat == RepeatMode.Off ? null : "accent";
-            SetTheme();
+            SetButtonTheme(shuffle);
+            SetButtonTheme(repeat);
         }
 
         private void ToggleView()
@@ -490,8 +491,6 @@ namespace CaiPlayer
             var background = dark ? Color.FromArgb(26, 29, 33) : Color.FromArgb(247, 248, 248);
             var surface = dark ? Color.FromArgb(38, 43, 47) : Color.White;
             var ink = dark ? Color.FromArgb(235, 238, 239) : Color.FromArgb(29, 37, 42);
-            var line = dark ? Color.FromArgb(74, 83, 89) : Color.FromArgb(194, 203, 209);
-            var accent = dark ? Color.FromArgb(57, 204, 238) : Color.FromArgb(172, 58, 12);
             BackColor = background;
             ForeColor = ink;
             deck.BackColor = surface;
@@ -504,12 +503,7 @@ namespace CaiPlayer
             foreach (Control c in AllControls(this))
             {
                 var b = c as Button;
-                if (b == null) continue;
-                bool primary = (string)b.Tag == "accent";
-                b.UseVisualStyleBackColor = false;
-                b.BackColor = primary ? accent : surface;
-                b.ForeColor = primary ? (dark ? Color.Black : Color.White) : ink;
-                b.FlatAppearance.BorderColor = primary ? accent : line;
+                if (b != null) SetButtonTheme(b);
             }
             themeButton.Text = dark ? "淺色模式" : "深色模式";
             var resource = dark ? "logo_dark.png" : "logo_light.png";
@@ -523,6 +517,17 @@ namespace CaiPlayer
                     if (previous != null) previous.Dispose();
                 }
             }
+        }
+
+        private void SetButtonTheme(Button button)
+        {
+            bool primary = (string)button.Tag == "accent";
+            var accent = dark ? Color.FromArgb(57, 204, 238) : Color.FromArgb(172, 58, 12);
+            button.UseVisualStyleBackColor = false;
+            button.BackColor = primary ? accent : deck.BackColor;
+            button.ForeColor = primary ? (dark ? Color.Black : Color.White) : ForeColor;
+            button.FlatAppearance.BorderColor = primary ? accent :
+                (dark ? Color.FromArgb(74, 83, 89) : Color.FromArgb(194, 203, 209));
         }
 
         private static System.Collections.Generic.IEnumerable<Control> AllControls(Control parent)

@@ -73,6 +73,7 @@ namespace CaiPlayer
             {
                 var pcm = reader.ToSampleProvider();
                 int rate = pcm.WaveFormat.SampleRate, channels = pcm.WaveFormat.Channels;
+                long length = reader.Length;
                 const int count = FramesPerBlock;
                 var buffer = new float[(rate * count / FramesPerSecond + Window + 2) * channels];
                 var fft = new Complex[Window];
@@ -98,16 +99,21 @@ namespace CaiPlayer
                         block = cache.ContainsKey(requested) ? requested + 1 : requested;
                     }
                     long first = (long)block * FramesPerBlock * rate / FramesPerSecond;
-                    reader.Position = first * reader.WaveFormat.BlockAlign;
+                    long bytePosition = first * reader.WaveFormat.BlockAlign;
                     int received = 0, read;
-                    while (received < buffer.Length && (read = pcm.Read(buffer, received, buffer.Length - received)) > 0)
-                        received += read;
+                    // A lookahead block can start beyond EOF. Keep the decoder usable for a later seek.
+                    if (length <= 0 || bytePosition < length) {
+                        reader.Position = bytePosition;
+                        while (received < buffer.Length && (read = pcm.Read(buffer, received, buffer.Length - received)) > 0)
+                            received += read;
+                    }
                     var frames = new float[count][];
                     for (int f = 0; f < count; f++)
                     {
                         lock (gate) { if (stopped) return; }
                         int start = (int)(((long)block * FramesPerBlock + f) * rate / FramesPerSecond - first);
                         var bands = frames[f] = new float[Bands];
+                        if (start * channels >= received) continue;
                         for (int c = 0; c < channels; c++)
                         {
                             for (int i = 0; i < Window; i++)
