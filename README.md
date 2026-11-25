@@ -14,6 +14,10 @@ You can also import the included EDM playlist or drag audio files into the app. 
 
 Open **My Playlists** (我的播放清單) to create an empty playlist, save the current queue under a name, or reopen a playlist. Changes to an open named playlist are saved automatically on this device. You can rename or delete playlists and add a selected song to another playlist. Use **Export Playlist** to make a file for another device or player.
 
+Use the Windows playlist sidebar to open a saved playlist or return to the folder library. **Recently Added** shows up to 20 songs, using file creation time for songs in configured folders and the time of addition for manually added songs. **Recently Played** shows the last 20 distinct songs, newest first. Both lists refresh when opened.
+
+Hover over CAI Player on the Windows taskbar to skip back, play or pause, or skip forward from the thumbnail, including when the main window is minimized.
+
 ## Windows Playback
 
 - Open **Library** (音樂庫) to search by title, artist, album, genre or path. The source selector includes the folder library, the 50 most recent tracks and the video library. From a result you can play the visible list, play a song next or append it to the queue.

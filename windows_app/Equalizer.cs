@@ -131,9 +131,9 @@ namespace CaiPlayer
             };
             output.Init(equalized);
             duration = equalized.Duration.TotalSeconds; ready = true; playing = play;
-            progress.Enabled = duration > 0; UpdateKnownDuration(active, duration); RecordRecent(uri);
+            progress.Enabled = duration > 0; UpdateKnownDuration(active, duration);
             state.Text = play ? "播放中" : "已暫停";
-            if (play) output.Play();
+            if (play) { output.Play(); RecordRecent(uri); }
         }
     }
 }

@@ -66,7 +66,10 @@ namespace CaiPlayer
             try
             {
                 string path = source.IsFile ? source.LocalPath : source.AbsoluteUri;
-                var recent = new[] { path }.Concat(RecentPaths().Where(s => !String.Equals(s, path,
+                var old = RecentPaths();
+                if ((media == null || !media.HasVideo) && RecentSongs.IsSong(source)) RecentSongs.RememberPlayed(source, old);
+                if (old.Length > 0 && old[0] == path) return;
+                var recent = new[] { path }.Concat(old.Where(s => !String.Equals(s, path,
                     source.IsFile ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))).Take(50).ToArray();
                 Registry.SetValue(MusicFolders.Settings, "RecentTracks", recent, RegistryValueKind.MultiString);
             }

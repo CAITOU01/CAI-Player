@@ -36,7 +36,7 @@ try {
         "/r:$framework\WPF\PresentationCore.dll", "/r:$framework\WPF\WindowsBase.dll",
         "/r:$framework\WPF\PresentationFramework.dll", "/r:$framework\WPF\WindowsFormsIntegration.dll"
     )
-    & (Join-Path $framework 'csc.exe') @options AssemblyInfo.cs Player.cs PlayerMetadata.cs TrackMetadata.cs TrackSignal.cs NowPlayingView.cs PlaybackOrder.cs MusicFolders.cs SavedPlaylists.cs LibraryBrowser.cs AudioCd.cs FlacWriter.cs Equalizer.cs VideoCaptions.cs Playlist.cs TrackEditor.cs ExportDialog.cs
+    & (Join-Path $framework 'csc.exe') @options AssemblyInfo.cs Player.cs PlayerMetadata.cs TrackMetadata.cs TrackSignal.cs NowPlayingView.cs PlaybackOrder.cs MusicFolders.cs SavedPlaylists.cs PlaylistSidebar.cs TaskbarPlayback.cs LibraryBrowser.cs AudioCd.cs FlacWriter.cs Equalizer.cs VideoCaptions.cs Playlist.cs TrackEditor.cs ExportDialog.cs
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed ($LASTEXITCODE)." }
     $libraries = @('TagLibSharp.dll','TagLibSharp-COPYING.txt','NAudio-LICENSE.txt',
         'webpdecoder-x86.dll','webpdecoder-x64.dll','libwebp-COPYING.txt','libwebp-PATENTS.txt',

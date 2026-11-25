@@ -33,6 +33,17 @@ namespace CaiPlayer
     {
         private const string Key = @"Software\CAI Player\Playlists";
         private static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue }; }
+        internal static SavedList Read(string id)
+        {
+            using (var key = Registry.CurrentUser.OpenSubKey(Key))
+            {
+                var json = key == null ? null : key.GetValue(id) as string;
+                if (json == null) return null;
+                var entry = Json().Deserialize<SavedList>(json);
+                entry.Id = id;
+                return entry;
+            }
+        }
         internal static List<SavedList> All()
         {
             var all = new List<SavedList>();
@@ -170,7 +181,7 @@ namespace CaiPlayer
                     SavedPlaylists.Delete(entry.Id); if (entry.Id == savedListId) savedListId = null;
                     reload(null);
                 });
-                try { reload(savedListId); dialog.ShowDialog(this); }
+                try { reload(savedListId); dialog.ShowDialog(this); ReloadSidebar(); }
                 catch (Exception e) { ShowError("無法開啟已儲存的播放清單", e); }
             }
         }

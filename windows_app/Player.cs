@@ -65,7 +65,7 @@ namespace CaiPlayer
         private double playbackSpeed = 1;
         private readonly ContextMenuStrip speedMenu = new ContextMenuStrip();
         private const string Product = "CAI Player";
-        private const string Version = "V0.05";
+        private const string Version = "V0.06";
 
         public PlayerWindow(string[] args)
         {
@@ -124,6 +124,7 @@ namespace CaiPlayer
             FormClosed += delegate { timer.Stop(); timer.Dispose(); StopMetadataScan(); ResetPlayer(); if (brand.Image != null) brand.Image.Dispose(); tips.Dispose(); repeatMenu.Dispose(); speedMenu.Dispose(); symbolFont.Dispose(); };
             Shown += delegate
             {
+                ReloadSidebar();
                 try { playlist.MusicRoots = MusicFolders.Load(); }
                 catch (Exception e) { ShowError("無法讀取音樂資料夾設定", e); }
                 if (args.Length != 0) OpenPaths(args);
@@ -155,6 +156,7 @@ namespace CaiPlayer
             button.Text = symbol;
             button.AccessibleName = name;
             tips.SetToolTip(button, name);
+            if (button == playButton) UpdateThumbnail();
         }
 
         private Button IconButton(string symbol, string name, Action action, bool accent = false)
@@ -272,11 +274,16 @@ namespace CaiPlayer
             listArea.Controls.Add(stage);
             stage.Visible = false;
             emptyHint.BringToFront();
-            listArea.Resize += delegate
+            EventHandler centerHint = delegate
             {
                 emptyHint.Location = new Point((listArea.Width - emptyHint.PreferredWidth) / 2, (listArea.Height - emptyHint.PreferredHeight) / 2);
             };
-            page.Controls.Add(listArea, 0, 3);
+            listArea.Resize += centerHint;
+            emptyHint.SizeChanged += centerHint;
+            var browser = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) };
+            browser.Controls.Add(listArea);
+            BuildSidebar(browser);
+            page.Controls.Add(browser, 0, 3);
             var edit = Row();
             editActions = edit;
             edit.Controls.Add(editButton = ActionButton("編輯", Edit));
@@ -414,6 +421,7 @@ namespace CaiPlayer
             page.SuspendLayout();
             deck.SuspendLayout();
             queueTitle.Visible = editActions.Visible = tracks.Visible = !expanded;
+            sidebar.Visible = !expanded;
             emptyHint.Visible = !expanded && playlist.Tracks.Count == 0;
             stage.Visible = expanded;
             if (expanded) stage.BringToFront();
@@ -498,6 +506,8 @@ namespace CaiPlayer
             stage.SetTheme(dark, surface, ink);
             tracks.BackColor = surface;
             tracks.ForeColor = ink;
+            sidebar.BackColor = surface;
+            sidebar.ForeColor = ink;
             emptyHint.BackColor = surface;
             emptyHint.ForeColor = dark ? Color.FromArgb(175, 190, 196) : Color.FromArgb(91, 105, 115);
             foreach (Control c in AllControls(this))
@@ -565,9 +575,11 @@ namespace CaiPlayer
                 if (track == focus) { item.Selected = true; item.Focused = true; }
             }
             tracks.EndUpdate();
+            emptyHint.Text = "將音檔或播放清單拖到這裡";
             emptyHint.Visible = !expanded && playlist.Tracks.Count == 0;
             if (tracks.SelectedItems.Count != 0) tracks.SelectedItems[0].EnsureVisible();
             queueTitle.Text = (String.IsNullOrWhiteSpace(playlist.Name) ? "播放清單" : playlist.Name) + "   ·   " + playlist.Tracks.Count + " 首";
+            SyncSidebar();
             UpdateButtons();
             QueueDurationScan();
         }
@@ -580,6 +592,7 @@ namespace CaiPlayer
             upButton.Enabled = index > 0;
             downButton.Enabled = index >= 0 && index + 1 < playlist.Tracks.Count;
             playButton.Enabled = playlist.Tracks.Count > 0;
+            UpdateThumbnail();
         }
 
         private bool MayReplace()
@@ -659,14 +672,16 @@ namespace CaiPlayer
         private void AddFiles(string[] paths)
         {
             Track first = null;
+            var added = new List<string>();
             foreach (var path in paths)
             {
                 if (!File.Exists(path)) continue;
                 var track = new Track(Path.GetFileNameWithoutExtension(path), Path.GetFullPath(path));
+                added.Add(track.Path);
                 playlist.Tracks.Add(track);
                 if (first == null) first = track;
             }
-            if (first != null) { MarkEdited(); RefreshList(first); }
+            if (first != null) { RecentSongs.RememberAdded(added); MarkEdited(); RefreshList(first); }
         }
 
         private void OpenPaths(string[] paths)
@@ -688,12 +703,14 @@ namespace CaiPlayer
             var track = new Track("", "");
             if (!TrackEditor.Update(this, track, true)) return;
             playlist.Tracks.Add(track);
+            RecentSongs.RememberAdded(new[] { track.Path });
             MarkEdited();
             RefreshList(track);
         }
 
         private void MarkEdited()
         {
+            smartQueue = null;
             dirty = true;
             folderLibrary = false;
             folderScan++;
@@ -849,7 +866,7 @@ namespace CaiPlayer
             media.SpeedRatio = playbackSpeed;
             if (openedPosition > 0) media.Position = TimeSpan.FromSeconds(openedPosition);
             if (media.HasVideo && videoHost == null) ShowVideo();
-            RecordRecent(media.Source);
+            if (playing) RecordRecent(media.Source);
             duration = media.NaturalDuration.HasTimeSpan ? media.NaturalDuration.TimeSpan.TotalSeconds : 0;
             if (duration > 0) UpdateKnownDuration(active, duration);
             else if (active != null && active.Duration > 0) duration = active.Duration;
@@ -924,6 +941,7 @@ namespace CaiPlayer
             if (equalizerOutput != null) { if (playing) equalizerOutput.Pause(); else equalizerOutput.Play(); }
             else if (playing) media.Pause(); else media.Play();
             playing = !playing;
+            if (ready && playing) RecordRecent(media != null ? media.Source : new Uri(playlist.Resolve(active)));
             Glyph(playButton, playing ? "\uE769" : "\uE768", playing ? "暫停" : "播放");
             state.Text = playing ? (ready ? "播放中" : "載入中…") : "已暫停";
         }
